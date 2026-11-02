@@ -4,6 +4,8 @@
 
 範例設定是 QWER（實際在跑的頻道：[t.me/qwer_whattf](https://t.me/qwer_whattf)）。換成別的團體只要改 `config.json`、`glossary.json` 和 `.env`。
 
+分階段開通（第一階段 YouTube＋Weverse→TG；第二階段 IG＋Threads）要申請什麼、怎麼驗收：[docs/階段開通教學.md](docs/階段開通教學.md)。
+
 ## 功能
 
 | 來源 | 抓什麼 | 需要的帳號 |
