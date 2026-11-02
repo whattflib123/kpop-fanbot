@@ -140,5 +140,6 @@ python deploy.py --logs   # 只看 log
 
 ## 注意
 - `.env`、`.env.deploy`、`data/` 不要進 git。
+- `.env` 不要在值後面寫行內註解（`KEY=   # 說明`）：docker `env_file` 會把 `# 說明` 當成值，空值的 token 會變成亂碼（例如 Threads 報 `Invalid OAuth access token`）。註解放上一行。
 - Weverse 用的是網頁版非公開 API，Weverse 改版可能會壞。
 - 第一次跑以前先確認 YouTube 頻道 ID 是官方的，同名頻道很多。
