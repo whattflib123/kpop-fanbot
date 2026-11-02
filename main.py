@@ -200,7 +200,8 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        enqueue_threads(db, c["uid"], text[: notify_threads.TEXT_LIMIT], reply_to_uid=p["uid"])
+        th_text = format_weverse_comment(c, zh, p["url"], zh_rt, show_reply_to, limit=notify_threads.TEXT_LIMIT)
+        enqueue_threads(db, c["uid"], th_text, reply_to_uid=p["uid"])
         db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
         ALERT.clear(db, c["uid"])
         db.commit()

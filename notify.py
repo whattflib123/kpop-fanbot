@@ -95,18 +95,47 @@ def send_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: li
     return _call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)["message_id"]
 
 
+def _clip(text: str, n: int) -> str:
+    """截到 n 字以內，截到的話尾巴放「…」。"""
+    if len(text) <= n:
+        return text
+    return text[: n - 1] + "…" if n > 0 else ""
+
+
 def format_weverse_comment(comment: dict, zh_body: str | None, post_url: str,
-                           zh_reply_to: str | None = None, show_reply_to: bool = False) -> str:
-    lines = [f"↪ {comment['author']} 在 Weverse 留言了 💬"]
-    rt = comment.get("reply_to")
-    if show_reply_to and rt:
-        who = rt["author"] or "粉絲"
-        lines.append(f"回覆{who}：「{zh_reply_to or rt['body']}」")
-    lines.append(f"「{zh_body or comment['body']}」")
-    lines.append(f"▶ {post_url}")
-    if zh_body:
-        lines.append(AI_NOTE)
-    return "\n".join(lines)
+                           zh_reply_to: str | None = None, show_reply_to: bool = False,
+                           limit: int | None = None) -> str:
+    """粉絲（或成員）：被回覆的留言 / 成員 回覆：留言；沒回覆別人就 成員：留言。
+
+    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠才縮成員留言，標題、連結、註記保留。
+    """
+    author = comment["author"]
+    rt = comment.get("reply_to") if show_reply_to else None
+    body = zh_body or comment["body"]
+    quoted = (zh_reply_to or rt["body"]) if rt else ""
+
+    def build(q: str, b: str) -> str:
+        lines = [f"↪ {author} 在 Weverse 留言了 💬"]
+        if rt:
+            lines.append(f"{rt['author'] or '粉絲'}：{q}")
+            lines.append(f"{author} 回覆：{b}")
+        else:
+            lines.append(f"{author}：{b}")
+        lines.append(f"▶ {post_url}")
+        if zh_body:
+            lines.append(AI_NOTE)
+        return "\n".join(lines)
+
+    text = build(quoted, body)
+    if not limit or len(text) <= limit:
+        return text
+    if rt:  # 先縮被回覆的那句，至少留「…」
+        quoted = _clip(quoted, max(1, limit - len(build("", body))))
+        text = build(quoted, body)
+    if len(text) > limit:  # 還不夠：縮成員留言
+        body = _clip(body, max(1, limit - len(build(quoted, ""))))
+        text = build(quoted, body)
+    return text[:limit]
 
 
 def send_weverse_comment(text: str, reply_to_message_id: int | None) -> int:

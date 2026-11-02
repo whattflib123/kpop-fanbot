@@ -63,6 +63,7 @@ SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已�
    - `weverse_communities[].id`：社群 ID，用網址路徑查：
      `python -c "from sources import weverse; print(weverse.community_id('qwer'))"`（`weverse.io/qwer` 的 `qwer`）。
      `show_reply_to`：成員回覆別人留言時，要不要附上被回覆的那則（粉絲暱稱不顯示）。
+     留言格式：`粉絲（或成員名）：被回覆的留言` 換行 `成員 回覆：留言`；沒回覆別人（或 `show_reply_to` 關）就 `成員：留言`。Threads 超過 500 字先縮被回覆那句（加「…」），還不夠才縮成員留言；TG 不截。
    - `instagram_accounts[]`：`username`、`author`（推播顯示的名字）、`label`（log 用）。對方必須是專業／創作者帳號。
    - 不要的來源整段刪掉即可。
 3. 改 `glossary.json`：團名、成員名、粉絲名的固定譯名（原文 → 譯名）。Weverse 貼文作者名會用 Weverse 官方名，不用另外設。
