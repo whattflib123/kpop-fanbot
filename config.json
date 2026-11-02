@@ -1,0 +1,21 @@
+{
+  "artists": [
+    {
+      "name": "QWER",
+      "hashtags": ["#QWER", "#큐더블유이알"],
+      "youtube_channels": [
+        {"id": "UCgD0APk2x9uBlLM0UsmhQjw", "label": "QWER 官方 YouTube (@QWER_Band_official)"}
+      ],
+      "weverse_communities": [
+        {"id": 164, "label": "QWER Weverse 成員貼文 (weverse.io/qwer)", "show_reply_to": true}
+      ],
+      "instagram_accounts": [
+        {"username": "qwerband_official", "author": "官方", "label": "QWER IG 官方 (@qwerband_official)"},
+        {"username": "choda._.n", "author": "Chodan", "label": "Chodan IG (@choda._.n)"},
+        {"username": "magenta_6262", "author": "Magenta", "label": "Magenta IG (@magenta_6262)"},
+        {"username": "i_am_young22", "author": "Hina", "label": "Hina IG (@i_am_young22)"},
+        {"username": "siyo.co.kr", "author": "Siyeon", "label": "Siyeon IG (@siyo.co.kr)"}
+      ]
+    }
+  ]
+}

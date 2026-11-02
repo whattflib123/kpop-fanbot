@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: ${BOT_NAME:-fanbot}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+      - ./glossary.json:/app/glossary.json:ro
