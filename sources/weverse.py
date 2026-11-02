@@ -112,3 +112,29 @@ def fetch_artist_comments(post_id: str) -> list[dict]:
             "reply_to": reply_to,
         })
     return out
+
+
+def fetch_notices(cid: int, is_seen, limit: int = 10) -> list[dict]:
+    """官方公告（Notice 分頁）。列表只有標題，內文要再打一次 detail，所以看過的只回 uid／title 不抓內文。
+    會員限定公告跳過（抓不到內文）。回傳格式同 fetch_posts，多 kind="notice"、author="官方"。"""
+    data = _get(f"/notice/v1.0/community-{cid}/notices", {"fieldSet": "noticesV1", "limit": str(limit), "pagingType": "CURSOR"})
+    out = []
+    for n in data.get("data", []):
+        if not n.get("exposed", True) or n.get("membershipOnly"):
+            continue
+        uid = f"wvn:{n['noticeId']}"
+        title = (n.get("title") or "").strip()
+        item = {
+            "uid": uid, "kind": "notice", "author": "官方", "title": title[:80], "body": "", "photos": [], "has_video": False,
+            "url": n["shareUrl"].split("?")[0],
+            "published": datetime.fromtimestamp(n["publishAt"] / 1000, timezone.utc).isoformat(),
+            "membership_only": False,
+        }
+        if not is_seen(uid):
+            d = _get(f"/notice/v1.0/notice-{n['noticeId']}", {"fieldSet": "noticeV1"})
+            body = (d.get("plainBody") or "").strip()
+            item["body"] = f"{title}\n\n{body}" if title and not body.startswith(title) else body or title
+            photos = ((d.get("attachment") or {}).get("photo") or {}).values()
+            item["photos"] = [p["url"] for p in photos if p.get("url")]
+        out.append(item)
+    return out
