@@ -104,13 +104,14 @@ Business Discovery 只能用「自己的 IG 專業帳號」去查別人的專業
 5. 填 `.env`：`META_USER_TOKEN`＝剛拿到的 token，`META_APP_SECRET`＝應用程式設定 → 基本資料 → 應用程式密鑰。
 6. `python meta_setup.py`：換長效 token → 取 **不會過期的粉專 token**，寫回 `.env` 的 `META_PAGE_TOKEN`、`META_IG_USER_ID`，並檢查 `config.json` 的 IG 帳號都查得到。
    新版粉專不會出現在 `me/accounts`，腳本會改用 token 授權範圍裡的粉專 id。
-7. 限流：app 每小時約 200 次。每個帳號每輪 1 次，5 個帳號 × 每 5 分鐘 = 60 次／小時；測試時呼叫太多會暫時回 `#4 Application request limit reached`，等一小時就好。
+7. 限流：開發模式 app 額度很小，而且 Business Discovery 巢狀查詢最先吃光的是「處理時間」（回應 header `x-app-usage` 的 `total_time`），不是呼叫次數。所以 IG 每 `IG_POLL_SECONDS`（預設 900 秒）才抓一次、每帳號只抓最近 5 則；用量任一項 ≥80% 或被回 `#4 Application request limit reached` 就自動跳過 IG，15 分鐘後再試。帳號很多的話把 `IG_POLL_SECONDS` 再調大。
 8. 改 FB 密碼或移除 app 授權會讓 token 失效，重做 4～6。
 
 ### `.env` 其他欄位
 - `POLL_SECONDS`：輪詢間隔，預設 300。
 - `BOT_NAME`：容器名稱和私訊警示的開頭，預設 `fanbot`。同一台主機跑多個團體時要各取不同名字。
 - `TRANSLATE_MAX_ATTEMPTS`：預設 12。
+- `IG_POLL_SECONDS`：IG 輪詢間隔，預設 900。
 
 ## 執行
 

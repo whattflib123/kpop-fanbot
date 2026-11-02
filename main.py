@@ -90,6 +90,7 @@ def flush_threads(db: sqlite3.Connection) -> None:
 
 
 COMMENT_WINDOW_DAYS = 7
+_ig_last_poll = 0.0  # IG 輪詢比其他來源慢（IG_POLL_SECONDS），避免吃光 Meta 的限流額度
 
 
 def bot_name() -> str:
@@ -215,6 +216,12 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
     def is_seen(uid: str) -> bool:
         return db.execute("SELECT 1 FROM seen WHERE uid=?", (uid,)).fetchone() is not None
 
+    global _ig_last_poll
+    ig_due = bool(os.environ.get("META_PAGE_TOKEN")) and \
+        time.time() - _ig_last_poll >= int(os.environ.get("IG_POLL_SECONDS", "900")) - 30
+    if ig_due:
+        _ig_last_poll = time.time()
+
     for artist in config["artists"]:
         feeds = [
             (f"yt:{ch['id']}", ch["label"], lambda ch=ch: youtube.fetch(ch["id"], is_seen))
@@ -225,12 +232,15 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
         ] + [
             (f"ig:{a['username']}", a["label"], lambda a=a: instagram.fetch_posts(a))
             for a in artist.get("instagram_accounts", [])
-            if os.environ.get("META_PAGE_TOKEN")
+            if ig_due
         ]
         communities = {f"wvp:{c['id']}": c for c in artist.get("weverse_communities", [])}
         for source, label, fetch in feeds:
             try:
                 videos = fetch()
+            except instagram.Throttled as e:
+                logging.info("%s", e)
+                continue
             except Exception as e:
                 logging.warning("抓 %s 失敗：%s", label, e)
                 continue
