@@ -1,4 +1,4 @@
-"""追星機器人：輪詢來源 → 新影片翻譯 → 推 Telegram。
+"""追星機器人：輪詢來源（YouTube／Weverse 成員貼文＋官方公告／IG）→ 翻譯 → 推 Telegram → 同步 Threads。
 
 用法：
   python main.py            # 常駐輪詢
@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import notify_threads
+import review
 from sources import instagram, weverse, youtube
 
 ROOT = Path(__file__).parent
@@ -45,6 +46,7 @@ def open_db() -> sqlite3.Connection:
     db.execute("CREATE TABLE IF NOT EXISTS threads_posted (uid TEXT PRIMARY KEY, media_id TEXT)")
     # 翻譯失敗次數；到上限就放棄那則（記 seen、不推）
     db.execute("CREATE TABLE IF NOT EXISTS translate_fail (uid TEXT PRIMARY KEY, attempts INTEGER)")
+    review.init_db(db)  # Threads 發文前審核
     return db
 
 
@@ -65,12 +67,26 @@ def flush_threads(db: sqlite3.Connection) -> None:
     rows = db.execute("SELECT uid, payload, reply_to_uid, attempts FROM threads_queue ORDER BY created").fetchall()
     for uid, payload, reply_to_uid, attempts in rows:
         reply_media = None
+        p = json.loads(payload)
         if reply_to_uid:
             if db.execute("SELECT 1 FROM threads_queue WHERE uid=?", (reply_to_uid,)).fetchone():
-                continue  # 原貼文還沒發出去，等它
+                continue  # 原貼文還沒發出去（或還在審核），等它
+            if review.decision(db, reply_to_uid)[0] == "skipped":
+                db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))  # 原貼文被略過，留言／續段也不發
+                db.commit()
+                continue
             row = db.execute("SELECT media_id FROM threads_posted WHERE uid=?", (reply_to_uid,)).fetchone()
             reply_media = row[0] if row else None
-        p = json.loads(payload)
+        else:
+            status, comment = review.decision(db, uid)
+            if status in ("asked", "await_comment"):
+                continue  # 等使用者在 TG 按鈕
+            if status == "skipped":
+                db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))
+                db.commit()
+                continue
+            if comment:
+                p["text"] = review.with_comment(comment, p["text"])  # 評論在最前面，分隔線，再譯文
         try:
             media_id = notify_threads.publish(p["text"], p["images"], reply_media)
         except Exception as e:
@@ -87,6 +103,7 @@ def flush_threads(db: sqlite3.Connection) -> None:
         db.execute("INSERT OR REPLACE INTO threads_posted VALUES (?,?)", (uid, media_id))
         db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))
         db.commit()
+        review.mark_posted(db, uid, media_id)
 
 
 COMMENT_WINDOW_DAYS = 7
@@ -208,7 +225,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
 
 
 def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
-    from notify import format_post, format_weverse_post, send_video, send_weverse_post
+    from notify import format_post, send_video, send_weverse_post, split_threads_post
     from translate import TranslateError, translate
 
     config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
@@ -230,6 +247,10 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
         ] + [
             (f"wvp:{c['id']}", c["label"], lambda c=c: weverse.fetch_posts(c["id"]))
             for c in artist.get("weverse_communities", [])
+        ] + [
+            (f"wvn:{c['id']}", f"{c['label']} 官方公告", lambda c=c: weverse.fetch_notices(c["id"], is_seen))
+            for c in artist.get("weverse_communities", [])
+            if c.get("notices")
         ] + [
             (f"ig:{a['username']}", a["label"], lambda a=a: instagram.fetch_posts(a))
             for a in artist.get("instagram_accounts", [])
@@ -263,7 +284,7 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
 
             new = [v for v in videos if not db.execute("SELECT 1 FROM seen WHERE uid=?", (v["uid"],)).fetchone()]
             for v in sorted(new, key=lambda x: x["published"]):
-                is_post = v["uid"].startswith(("wvp:", "ig:"))
+                is_post = v["uid"].startswith(("wvp:", "wvn:", "ig:"))
                 platform = "Instagram" if v["uid"].startswith("ig:") else "Weverse"
                 text_in = v["body"] if is_post else v["title"]
                 try:
@@ -285,10 +306,15 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                     continue
                 th_tags = artist.get("hashtags", [])[:1]  # Threads 一篇只吃一個主題標籤，其餘只是文字
                 if is_post:
-                    th_text = format_weverse_post(artist["name"], v, zh, th_tags,
-                                                  max_len=notify_threads.TEXT_LIMIT, more="…（全文見連結）",
-                                                  platform=platform)
-                    enqueue_threads(db, v["uid"], th_text, v.get("photos"))
+                    # 超過 500 字不截斷：切成多段，第 2 段起接在前一段底下當回覆
+                    parts = split_threads_post(artist["name"], v, zh, th_tags, platform, notify_threads.TEXT_LIMIT)
+                    prev = None
+                    for i, part in enumerate(parts):
+                        uid = v["uid"] if i == 0 else f"{v['uid']}#{i + 1}"
+                        enqueue_threads(db, uid, part, v.get("photos") if i == 0 else None, reply_to_uid=prev)
+                        prev = uid
+                    if notify_threads.enabled():  # 發 Threads 前先私訊使用者審核（可加評論）
+                        review.ask(db, v["uid"], parts[0], len(parts), len(v.get("photos") or []), notify_threads.TEXT_LIMIT)
                 else:
                     th_text = format_post(artist["name"], v, zh, th_tags)
                     enqueue_threads(db, v["uid"], th_text[: notify_threads.TEXT_LIMIT],
@@ -318,7 +344,7 @@ def main() -> None:
         run_once(db, args.dry_run)
         if args.once or args.dry_run:
             break
-        time.sleep(interval)
+        review.wait(db, interval)  # 期間長輪詢 TG，處理審核按鈕／評論
 
 
 if __name__ == "__main__":

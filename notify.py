@@ -25,6 +25,46 @@ def send_admin(text: str) -> None:
     _call("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True)
 
 
+# ───── Threads 審核用（review.py）：私訊預覽＋按鈕、收回覆 ─────
+def send_review(text: str, uid: str) -> int:
+    kb = {"inline_keyboard": [[
+        {"text": "✅ 發佈", "callback_data": f"th:pub:{uid}"},
+        {"text": "✍️ 加評論", "callback_data": f"th:cmt:{uid}"},
+        {"text": "⏭ 略過", "callback_data": f"th:skip:{uid}"},
+    ]]}
+    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=text[:MESSAGE_LIMIT],
+                 reply_markup=kb, disable_web_page_preview=True)["message_id"]
+
+
+def edit_review(message_id: int, status_line: str) -> None:
+    """拿掉按鈕，狀態用回覆接在預覽下面。"""
+    chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
+    _call("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id, reply_markup={"inline_keyboard": []})
+    _call("sendMessage", chat_id=chat_id, text=status_line,
+          reply_parameters={"message_id": message_id, "allow_sending_without_reply": True})
+
+
+def ask_comment(text: str) -> int:
+    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=text,
+                 reply_markup={"force_reply": True, "input_field_placeholder": "你的評論"})["message_id"]
+
+
+def answer_callback(callback_id: str, text: str) -> None:
+    _call("answerCallbackQuery", callback_query_id=callback_id, text=text)
+
+
+def get_updates(offset: int | None, timeout: int = 0) -> list[dict]:
+    url = API.format(token=os.environ["TELEGRAM_BOT_TOKEN"], method="getUpdates")
+    payload = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
+    if offset is not None:
+        payload["offset"] = offset
+    resp = requests.post(url, json=payload, timeout=timeout + 15)
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram getUpdates 失敗：{data.get('description')}")
+    return data["result"]
+
+
 def format_post(artist: str, video: dict, zh_title: str | None, hashtags: list[str] | None = None) -> str:
     """YouTube 影片推文（純文字）。"""
     kind = "新 Shorts" if video.get("is_short") else "新影片"
@@ -58,7 +98,10 @@ def format_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: 
                         max_len: int = MESSAGE_LIMIT, more: str = "…", platform: str = "Weverse") -> str:
     """Weverse／Instagram 成員貼文（純文字）。只放譯文；翻譯失敗或不用翻才用原文。超過 max_len 截內文並接 more。"""
     member = "（會員限定）" if post.get("membership_only") else ""
-    head = f"{artist} {post['author']} 在 {platform} 發佈了新貼文！{'📷' if platform == 'Instagram' else '💬'}{member}"
+    if post.get("kind") == "notice":
+        head = f"{artist} 官方在 {platform} 發佈了公告！📢"
+    else:
+        head = f"{artist} {post['author']} 在 {platform} 發佈了新貼文！{'📷' if platform == 'Instagram' else '💬'}{member}"
     tail = [f"▶ {post['url']}"]
     if post.get("has_video"):
         tail.insert(0, "（貼文含影片，請點連結觀看）")
@@ -76,6 +119,39 @@ def format_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: 
         body = body[: max(0, len(body) - (len(plain) - max_len) - len(more))] + more
         plain = "\n".join(build(body))
     return plain
+
+
+def split_threads_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None,
+                       platform: str, limit: int) -> list[str]:
+    """Threads 版：超過 limit 不截斷，切成多段，第 2 段起當前一段的回覆（留言接續）。
+    第 1 段：標題＋內文開頭＋hashtag（主題標籤要在主貼文）；最後一段結尾接連結、AI 註記；中間段只有內文。"""
+    full = format_weverse_post(artist, post, zh_body, hashtags, max_len=10**9, platform=platform)
+    if len(full) <= limit:
+        return [full]
+    head, _, rest = full.partition("\n\n")
+    body, _, tail = rest.rpartition("\n\n")  # tail = ▶ 連結／含影片／hashtag／AI 註記
+    tag_line = " ".join(hashtags) if hashtags else ""
+    tail = "\n".join(l for l in tail.split("\n") if l != tag_line)
+    first_fixed = len(head) + 2 + (len(tag_line) + 2 if tag_line else 0)
+    parts, cur, cap = [], "", limit - first_fixed - 6  # -6 給「（續）」記號
+    for line in body.split("\n"):
+        while len(line) > cap:  # 單行就超長：硬切
+            parts.append(cur + line[:cap]); cur, line = "", line[cap:]; cap = limit - 12
+        if len(cur) + len(line) + 1 > cap:
+            parts.append(cur.rstrip("\n")); cur = ""; cap = limit - 12
+        cur += line + "\n"
+    parts.append(cur.rstrip("\n"))
+    parts = [p for p in parts if p.strip()]
+    n = len(parts)
+    out = []
+    for i, p in enumerate(parts):
+        s = f"{head}\n\n{p}" if i == 0 else f"（續 {i + 1}/{n}）\n{p}"
+        if i == 0 and tag_line:
+            s += f"\n\n{tag_line}"
+        if i == n - 1:
+            s += f"\n\n{tail}"
+        out.append(s[:limit])
+    return out
 
 
 def send_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,

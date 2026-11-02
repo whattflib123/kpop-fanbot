@@ -11,12 +11,12 @@
 | 來源 | 抓什麼 | 需要的帳號 |
 |---|---|---|
 | YouTube | 官方頻道新影片／Shorts，翻標題 | 不用（RSS，失敗時改抓頻道頁面） |
-| Weverse | 成員貼文（Artist 分頁）＋成員在自己貼文下的留言，翻全文 | 不用（網頁版 API 免登入） |
+| Weverse | 成員貼文（Artist 分頁）＋成員在自己貼文下的留言＋官方公告（Notice 分頁），翻全文 | 不用（網頁版 API 免登入） |
 | Instagram | 官方＋成員帳號的新貼文，翻內文 | 自己的 IG 專業帳號＋FB 粉專＋Meta 開發者 app |
 
 推播到：
 - **Telegram 頻道**：純文字通知＋圖片相簿（最多 10 張）。成員留言用「回覆」掛在原貼文下面。
-- **Threads**（選用）：同樣內容，上限 500 字、圖片輪播最多 20 張；成員留言發成原 Threads 貼文的回覆。
+- **Threads**（選用）：同樣內容，圖片輪播最多 20 張；超過 500 字不截斷，切成多段，第 2 段起以「（續 n/N）」接在前一段的回覆；成員留言發成原 Threads 貼文的回覆。發文前先私訊你預覽，可加自己的評論（見「Threads 發文前審核」）。
 
 推播範例：
 ```
@@ -36,6 +36,11 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 - **推播失敗**（TG 掛掉）：不記 seen，下輪重試。Threads 失敗不影響 TG，最多重試 5 次。
 - **Threads 一篇只有一個主題標籤**：只放第一個 hashtag，Threads 會把它轉成標籤、顯示時不帶 `#`。
 - Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。
+- Weverse 官方公告：`weverse_communities[].notices` 設 `true` 才抓。列表只有標題，沒看過的才打 detail 抓內文和照片；會員限定公告跳過。標題「{團名} 官方在 Weverse 發佈了公告！📢」。
+
+### Threads 發文前審核
+每篇貼文（不含留言回覆、續段）翻好後先私訊 `TELEGRAM_ADMIN_CHAT_ID` 預覽＋按鈕「✅ 發佈／✍️ 加評論／⏭ 略過」。加評論 = 回覆 bot 的提示訊息，評論放在貼文最前面、接「——— 以下為翻譯 ———」分隔線再譯文（上限 = 500 − 本文 − 分隔線）；略過 = 這篇和它的續段、底下成員留言都不發 Threads；`THREADS_REVIEW_HOURS`（預設 24）小時沒回自動發。`THREADS_REVIEW=0` 關閉。TG 頻道不受影響，照舊自動推。
+審核靠 bot 在兩輪之間長輪詢 `getUpdates`：同一個 bot token 不能有第二個程式同時 `getUpdates`（會 `409 Conflict`），本機要用 bot 收訊息時先停遠端容器。
 - 抓不到：IG 限時動態、IG 廣播頻道、成員在別人 IG 貼文下的留言（API 不提供）。
 
 ## 架構
@@ -45,15 +50,16 @@ main.py              輪詢迴圈：抓來源 → 比對 seen → 翻譯 → 推
 translate.py         Claude API 翻譯（標題／貼文兩種 prompt＋詞彙表）
 notify.py            推播文字格式（TG／Threads 共用）＋ Telegram 推播
 notify_threads.py    Threads API 發文（container → publish；token 自動 refresh）
+review.py            Threads 發文前 TG 審核（按鈕、加評論、逾時自動發；長輪詢 getUpdates）
 sources/youtube.py   YouTube RSS＋頻道頁面備援
-sources/weverse.py   Weverse 網頁版 API（HMAC 簽章，key 失效會自動從 weverse.io 前端 JS 重抓）
+sources/weverse.py   Weverse 網頁版 API：成員貼文、留言、官方公告（HMAC 簽章，key 失效會自動從 weverse.io 前端 JS 重抓）
 sources/instagram.py IG Business Discovery
 threads_setup.py     驗證／換長效 Threads token
 meta_setup.py        換不會過期的 FB 粉專 token＋檢查 IG 帳號
 deploy.py            SSH 推檔＋docker compose 部署
 ```
 
-SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已初始化的來源）、`tg_messages`（貼文→TG message_id，留言回覆用）、`threads_queue`／`threads_posted`、`translate_fail`。
+SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已初始化的來源）、`tg_messages`（貼文→TG message_id，留言回覆用）、`threads_queue`／`threads_posted`、`threads_review`（審核狀態）、`kv`（TG getUpdates offset）、`translate_fail`。
 
 ## 換成別的團體
 
@@ -65,6 +71,7 @@ SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已�
    - `weverse_communities[].id`：社群 ID，用網址路徑查：
      `python -c "from sources import weverse; print(weverse.community_id('qwer'))"`（`weverse.io/qwer` 的 `qwer`）。
      `show_reply_to`：成員回覆別人留言時，要不要附上被回覆的那則（粉絲暱稱不顯示）。
+     `notices`：`true` = 也抓官方公告。
      留言格式：`粉絲（或成員名）：被回覆的留言` 換行 `成員 回覆：留言`；沒回覆別人（或 `show_reply_to` 關）就 `成員：留言`。Threads 超過 500 字先縮被回覆那句（加「…」），還不夠才縮成員留言；TG 不截。
    - `instagram_accounts[]`：`username`、`author`（推播顯示的名字）、`label`（log 用）。對方必須是專業／創作者帳號。
    - 不要的來源整段刪掉即可。
@@ -83,7 +90,7 @@ cp .env.example .env
 1. 找 [@BotFather](https://t.me/BotFather) `/newbot` 拿 token → `TELEGRAM_BOT_TOKEN`。
 2. 開一個頻道，把 bot 加成管理員（要有發文權限）。
 3. `TELEGRAM_CHAT_ID`：公開頻道可以填 `@頻道名`；私人頻道是 `-100` 開頭的數字（把頻道訊息轉給 [@userinfobot](https://t.me/userinfobot) 之類的 bot 查，或用 bot API `getUpdates`）。
-4. `TELEGRAM_ADMIN_CHAT_ID`（建議）：你自己的個人 chat id，收系統警示。先私訊 bot 一句話，再開 `https://api.telegram.org/bot<TOKEN>/getUpdates` 看 `chat.id`。
+4. `TELEGRAM_ADMIN_CHAT_ID`（建議）：你自己的個人 chat id，收系統警示和 Threads 發文審核。先私訊 bot 一句話，再開 `https://api.telegram.org/bot<TOKEN>/getUpdates` 看 `chat.id`。
 
 ### 2. Claude API（必要）
 [console.anthropic.com](https://console.anthropic.com) 建 API key → `ANTHROPIC_API_KEY`，帳戶要有額度。
@@ -115,6 +122,7 @@ Business Discovery 只能用「自己的 IG 專業帳號」去查別人的專業
 - `BOT_NAME`：容器名稱和私訊警示的開頭，預設 `fanbot`。同一台主機跑多個團體時要各取不同名字。
 - `TRANSLATE_MAX_ATTEMPTS`：預設 12。
 - `IG_POLL_SECONDS`：IG 輪詢間隔，預設 900。
+- `THREADS_REVIEW`：`0` 關閉發文前審核，預設開。`THREADS_REVIEW_HOURS`：審核逾時自動發，預設 24。
 
 ## 執行
 
