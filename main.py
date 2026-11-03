@@ -201,6 +201,14 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
     show_reply_to = bool(community.get("show_reply_to"))
     new = [(p, c) for p, c in comments if not db.execute("SELECT 1 FROM seen WHERE uid=?", (c["uid"],)).fetchone()]
     for p, c in sorted(new, key=lambda x: x[1]["created"]):
+        # 原貼文我們沒推過（上線前既有、或翻譯放棄）→ 留言也不推，只記 seen（使用者 2026-11-03 決定：沒脈絡的留言不發）
+        # 原貼文還沒 seen = 翻譯／推播失敗等下輪重試 → 這則留言也等，下輪再處理
+        if not db.execute("SELECT 1 FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone():
+            if db.execute("SELECT 1 FROM seen WHERE uid=?", (p["uid"],)).fetchone() and not dry_run:
+                db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], None, int(time.time())))
+                db.commit()
+                logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
+            continue
         try:
             zh = translate(c["body"], post=True)
             zh_rt = translate(c["reply_to"]["body"], post=True) if show_reply_to and c["reply_to"] else None
