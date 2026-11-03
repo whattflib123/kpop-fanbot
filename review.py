@@ -30,7 +30,9 @@ def with_comment(comment: str, text: str) -> str:
 
 
 def enabled() -> bool:
-    return bool(os.environ.get("TELEGRAM_ADMIN_CHAT_ID")) and os.environ.get("THREADS_REVIEW", "1") != "0"
+    # Threads 沒開就不審、也不長輪詢 TG（h2h-fanbot 先修，2026-11-03 帶回）
+    return (notify_threads.enabled() and bool(os.environ.get("TELEGRAM_ADMIN_CHAT_ID"))
+            and os.environ.get("THREADS_REVIEW", "1") != "0")
 
 
 def timeout_sec() -> int:
