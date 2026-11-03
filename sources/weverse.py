@@ -100,6 +100,7 @@ def fetch_artist_comments(post_id: str) -> list[dict]:
         reply_to = None
         if parent.get("type") == "COMMENT" and pdata.get("body"):
             reply_to = {
+                "id": pdata.get("commentId"),  # 同一輪成員連回同一則留言時用來合併
                 "body": pdata["body"].strip(),
                 "author": _name(pauthor) if pauthor.get("profileType") == "ARTIST" else None,  # 粉絲不留暱稱
             }

@@ -108,6 +108,7 @@ def flush_threads(db: sqlite3.Connection) -> None:
 
 COMMENT_WINDOW_DAYS = 7
 _ig_last_poll = 0.0  # IG 輪詢比其他來源慢（IG_POLL_SECONDS），避免吃光 Meta 的限流額度
+_comments_last_poll: dict[str, float] = {}  # 成員留言每 COMMENT_POLL_SECONDS 抓一次（預設 15 分），成員連回的幾句才合得成一則
 
 
 def bot_name() -> str:
@@ -180,6 +181,10 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
     from translate import TranslateError, translate
 
     source = f"wvc:{community['id']}"
+    initialized = db.execute("SELECT 1 FROM sources WHERE source=?", (source,)).fetchone()
+    if initialized and time.time() - _comments_last_poll.get(source, 0) < int(os.environ.get("COMMENT_POLL_SECONDS", "900")) - 30:
+        return
+    _comments_last_poll[source] = time.time()
     cutoff = time.time() - COMMENT_WINDOW_DAYS * 86400
     recent = [p for p in posts if datetime.fromisoformat(p["published"]).timestamp() >= cutoff]
     comments = []
@@ -189,7 +194,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         except Exception as e:
             logging.warning("抓留言失敗 %s：%s", p["uid"], e)
 
-    if not db.execute("SELECT 1 FROM sources WHERE source=?", (source,)).fetchone():
+    if not initialized:
         if not dry_run:
             db.executemany("INSERT OR IGNORE INTO seen VALUES (?,?,?,?,?)",
                            [(c["uid"], source, c["body"][:80], None, int(time.time())) for _, c in comments])
@@ -200,6 +205,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
 
     show_reply_to = bool(community.get("show_reply_to"))
     new = [(p, c) for p, c in comments if not db.execute("SELECT 1 FROM seen WHERE uid=?", (c["uid"],)).fetchone()]
+    groups: dict[tuple, list] = {}  # 同一位成員回同一則留言 → 合成一則推（同一輪內）
     for p, c in sorted(new, key=lambda x: x[1]["created"]):
         # 原貼文我們沒推過（上線前既有、或翻譯放棄）→ 留言也不推，只記 seen（使用者 2026-11-03 決定：沒脈絡的留言不發）
         # 原貼文還沒 seen = 翻譯／推播失敗等下輪重試 → 這則留言也等，下輪再處理
@@ -209,26 +215,36 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
                 db.commit()
                 logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
             continue
+        rt = c["reply_to"] if show_reply_to else None
+        key = (p["uid"], c["author"], rt["id"]) if rt and rt.get("id") else (c["uid"],)
+        groups.setdefault(key, (p, []))[1].append(c)
+
+    for p, cs in groups.values():
+        first = cs[0]
         try:
-            zh = translate(c["body"], post=True)
-            zh_rt = translate(c["reply_to"]["body"], post=True) if show_reply_to and c["reply_to"] else None
+            zhs = [translate(c["body"], post=True) for c in cs]
+            zh_rt = translate(first["reply_to"]["body"], post=True) if show_reply_to and first["reply_to"] else None
         except TranslateError as e:
-            ALERT.fail(db, source, {"uid": c["uid"], "title": c["body"], "url": p["url"]}, e)
+            ALERT.fail(db, source, {"uid": first["uid"], "title": first["body"], "url": p["url"]}, e)
             continue
-        logging.info("新留言 %s | %s → %s", c["author"], c["body"], zh)
+        for c, zh in zip(cs, zhs):
+            logging.info("新留言 %s | %s → %s", c["author"], c["body"], zh)
+        if len(cs) > 1:
+            logging.info("合併 %d 則同一留言的回覆成一則", len(cs))
         if dry_run:
             continue
         row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
-        text = format_weverse_comment(c, zh, p["url"], zh_rt, show_reply_to)
+        text = format_weverse_comment(cs, zhs, p["url"], zh_rt, show_reply_to)
         try:
             send_weverse_comment(text, row[0] if row else None)
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        th_text = format_weverse_comment(c, zh, p["url"], zh_rt, show_reply_to, limit=notify_threads.TEXT_LIMIT)
-        enqueue_threads(db, c["uid"], th_text, reply_to_uid=p["uid"])
-        db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
-        ALERT.clear(db, c["uid"])
+        th_text = format_weverse_comment(cs, zhs, p["url"], zh_rt, show_reply_to, limit=notify_threads.TEXT_LIMIT)
+        enqueue_threads(db, first["uid"], th_text, reply_to_uid=p["uid"])
+        for c, zh in zip(cs, zhs):
+            db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
+            ALERT.clear(db, c["uid"])
         db.commit()
 
 

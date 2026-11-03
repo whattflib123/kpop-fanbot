@@ -178,39 +178,49 @@ def _clip(text: str, n: int) -> str:
     return text[: n - 1] + "…" if n > 0 else ""
 
 
-def format_weverse_comment(comment: dict, zh_body: str | None, post_url: str,
+def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None], post_url: str,
                            zh_reply_to: str | None = None, show_reply_to: bool = False,
                            limit: int | None = None) -> str:
     """粉絲（或成員）：被回覆的留言 / 成員 回覆：留言；沒回覆別人就 成員：留言。
 
-    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠才縮成員留言，標題、連結、註記保留。
+    comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時被回覆那句只出現一次，
+    回覆每句一行「· 」。
+    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠從最早的回覆開始縮，標題、連結、註記保留。
     """
-    author = comment["author"]
-    rt = comment.get("reply_to") if show_reply_to else None
-    body = zh_body or comment["body"]
+    first = comments[0]
+    author = first["author"]
+    rt = first.get("reply_to") if show_reply_to else None
+    bodies = [zh or c["body"] for c, zh in zip(comments, zh_bodies)]
     quoted = (zh_reply_to or rt["body"]) if rt else ""
+    has_zh = any(zh_bodies)
 
-    def build(q: str, b: str) -> str:
+    def build(q: str, bs: list[str]) -> str:
         lines = [f"↪ {author} 在 Weverse 留言了 💬"]
         if rt:
             lines.append(f"{rt['author'] or '粉絲'}：{q}")
-            lines.append(f"{author} 回覆：{b}")
+        label = f"{author} 回覆" if rt else author
+        if len(bs) == 1:
+            lines.append(f"{label}：{bs[0]}")
         else:
-            lines.append(f"{author}：{b}")
+            lines.append(f"{label}：")
+            lines += [f"· {b}" for b in bs]
         lines.append(f"▶ {post_url}")
-        if zh_body:
+        if has_zh:
             lines.append(AI_NOTE)
         return "\n".join(lines)
 
-    text = build(quoted, body)
+    text = build(quoted, bodies)
     if not limit or len(text) <= limit:
         return text
     if rt:  # 先縮被回覆的那句，至少留「…」
-        quoted = _clip(quoted, max(1, limit - len(build("", body))))
-        text = build(quoted, body)
-    if len(text) > limit:  # 還不夠：縮成員留言
-        body = _clip(body, max(1, limit - len(build(quoted, ""))))
-        text = build(quoted, body)
+        quoted = _clip(quoted, max(1, limit - len(build("", bodies))))
+        text = build(quoted, bodies)
+    for i in range(len(bodies)):  # 還不夠：從最早的回覆開始縮
+        over = len(text) - limit
+        if over <= 0:
+            break
+        bodies[i] = _clip(bodies[i], max(1, len(bodies[i]) - over))
+        text = build(quoted, bodies)
     return text[:limit]
 
 
