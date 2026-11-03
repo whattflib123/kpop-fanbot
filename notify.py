@@ -178,14 +178,15 @@ def _clip(text: str, n: int) -> str:
     return text[: n - 1] + "…" if n > 0 else ""
 
 
-def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None], post_url: str,
+def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None],
                            zh_reply_to: str | None = None, show_reply_to: bool = False,
                            limit: int | None = None) -> str:
     """粉絲（或成員）：被回覆的留言 / 成員 回覆：留言；沒回覆別人就 成員：留言。
 
     comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時被回覆那句只出現一次，
     回覆每句一行「· 」。
-    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠從最早的回覆開始縮，標題、連結、註記保留。
+    不放連結（使用者 2026-11-03 決定；TG／Threads 都掛在原貼文下面，看得到出處）。
+    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠從最早的回覆開始縮，標題、註記保留。
     """
     first = comments[0]
     author = first["author"]
@@ -204,7 +205,6 @@ def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None], po
         else:
             lines.append(f"{label}：")
             lines += [f"· {b}" for b in bs]
-        lines.append(f"▶ {post_url}")
         if has_zh:
             lines.append(AI_NOTE)
         return "\n".join(lines)
