@@ -178,6 +178,7 @@ ALERT = TranslateAlert()
 def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts: list[dict], dry_run: bool) -> None:
     """最近 COMMENT_WINDOW_DAYS 天內的成員貼文，檢查底下有沒有新的成員留言。"""
     from notify import format_weverse_comment, send_weverse_comment
+    from translate import TranslateError, translate
 
     source = f"wvc:{community['id']}"
     initialized = db.execute("SELECT 1 FROM sources WHERE source=?", (source,)).fetchone()
@@ -219,23 +220,28 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
 
     for p, cs in groups.values():
         first = cs[0]
-        for c in cs:
-            logging.info("新留言 %s | %s", c["author"], c["body"])
+        try:
+            zhs = [translate(c["body"], post=True) for c in cs]
+        except TranslateError as e:
+            ALERT.fail(db, source, {"uid": first["uid"], "title": first["body"], "url": p["url"]}, e)
+            continue
+        for c, zh in zip(cs, zhs):
+            logging.info("新留言 %s | %s → %s", c["author"], c["body"], zh)
         if len(cs) > 1:
             logging.info("合併 %d 則同一留言的回覆成一則", len(cs))
         if dry_run:
             continue
         row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
-        text = format_weverse_comment(cs)
+        text = format_weverse_comment(cs, zhs)
         try:
             send_weverse_comment(text, row[0] if row else None)
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        th_text = format_weverse_comment(cs, limit=notify_threads.TEXT_LIMIT)
+        th_text = format_weverse_comment(cs, zhs, limit=notify_threads.TEXT_LIMIT)
         enqueue_threads(db, first["uid"], th_text, reply_to_uid=p["uid"])
-        for c in cs:
-            db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], None, int(time.time())))
+        for c, zh in zip(cs, zhs):
+            db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
             ALERT.clear(db, c["uid"])
         db.commit()
 
