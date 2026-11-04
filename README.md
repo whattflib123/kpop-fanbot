@@ -92,7 +92,7 @@ cp .env.example .env
 
 ### 2. Claude API（必要）
 [console.anthropic.com](https://console.anthropic.com) 建 API key → `ANTHROPIC_API_KEY`，帳戶要有額度。
-模型 `claude-opus-5-5`（effort low）。估算：每則約 $0.002～0.02，一個團每月約 200 則 ≈ US$1～3。
+模型 `claude-sonnet-5-5`（effort low）。估算：每則約 $0.001～0.01，一個團每月約 200 則 ≈ US$0.5～1.5。
 
 ### 3. Threads（選用）
 1. [developers.facebook.com](https://developers.facebook.com) 建 app，使用案例選 **Threads API**，權限 `threads_basic`、`threads_content_publish`。
