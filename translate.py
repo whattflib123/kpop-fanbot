@@ -6,7 +6,7 @@ from pathlib import Path
 
 import anthropic
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-sonnet-5-5"
 GLOSSARY = json.loads((Path(__file__).parent / "glossary.json").read_text(encoding="utf-8"))
 
 _GLOSSARY_TEXT = "詞彙表（原文 → 譯名）：\n" + "\n".join(f"{k} → {v}" for k, v in GLOSSARY.items())
