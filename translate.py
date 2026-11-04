@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import anthropic
@@ -46,12 +47,32 @@ class TranslateError(Exception):
     """翻譯失敗（額度不足、API 錯誤、被拒、截斷）。呼叫端不推播，下輪重試。"""
 
 
+# 模型偶爾把自我修正混進譯文（例如「Wait, I must not add emoji… Correct output:」），原文沒有這些字才算外洩
+_LEAK = re.compile(r"(?i)\b(wait,|correct output|corrected output|i must|i should|let me|my mistake|"
+                   r"actually,|note:|translation:|output:)")
+
+
+def _leaked(src: str, out: str) -> bool:
+    found = {m.group(0).lower() for m in _LEAK.finditer(out)}
+    return any(f not in src.lower() for f in found)
+
+
 def translate(title: str, post: bool = False) -> str | None:
-    """回傳譯文；不需要翻（emoji／符號）回傳 None；失敗丟 TranslateError。post=True 用貼文 prompt。"""
+    """回傳譯文；不需要翻（emoji／符號）回傳 None；失敗丟 TranslateError。post=True 用貼文 prompt。
+    譯文混進模型的自言自語就重翻一次，還是有就當失敗（下輪重試）。"""
     if not needs_translation(title):
         return None
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise TranslateError("未設定 ANTHROPIC_API_KEY")
+    for _ in range(2):
+        text = _translate_once(title, post)
+        if not _leaked(title, text):
+            return text
+        logging.warning("譯文混進模型自言自語，重翻：%r", text[:200])
+    raise TranslateError("譯文混進模型的自言自語（重翻仍然有）")
+
+
+def _translate_once(title: str, post: bool) -> str:
     try:
         resp = _get_client().beta.messages.create(
             model=MODEL,
