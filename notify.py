@@ -1,5 +1,6 @@
 """推文文字格式（純文字，TG／Threads 共用）＋ Telegram 推播。"""
 import html
+import io
 import json
 import os
 
@@ -157,8 +158,21 @@ def split_threads_post(artist: str, post: dict, zh_body: str | None, hashtags: l
     return out
 
 
+def _shrink(raw: bytes, side: int = 2560) -> bytes:
+    """壓成長邊 side px 的 JPEG（原圖動輒 5MB 以上，整組上傳會逾時）。壓失敗就傳原檔。"""
+    try:
+        from PIL import Image, ImageOps
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+        im.thumbnail((side, side))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return raw
+
+
 def _send_media_group(chat_id: str, media: list[dict]) -> list[dict]:
-    """先讓 Telegram 用網址抓圖；失敗（例如單張超過網址抓圖的 5MB 上限）就自己下載再上傳（上限 10MB）。"""
+    """先讓 Telegram 用網址抓圖；失敗（例如單張超過網址抓圖的 5MB 上限）就自己下載、壓縮再上傳。"""
     try:
         return _call("sendMediaGroup", chat_id=chat_id, media=media)
     except RuntimeError:
@@ -167,7 +181,7 @@ def _send_media_group(chat_id: str, media: list[dict]) -> list[dict]:
     for i, m in enumerate(media):
         r = requests.get(m["media"], timeout=60)
         r.raise_for_status()
-        files[f"p{i}"] = (f"p{i}.jpg", r.content)
+        files[f"p{i}"] = (f"p{i}.jpg", _shrink(r.content))
         up.append({**m, "media": f"attach://p{i}"})
     url = API.format(token=os.environ["TELEGRAM_BOT_TOKEN"], method="sendMediaGroup")
     data = requests.post(url, data={"chat_id": chat_id, "media": json.dumps(up)}, files=files, timeout=120).json()
