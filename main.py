@@ -53,6 +53,9 @@ def open_db() -> sqlite3.Connection:
 THREADS_MAX_ATTEMPTS = 5
 
 
+_PLATFORM = {"yt": "youtube", "wvp": "weverse", "wvn": "weverse", "ig": "instagram"}
+
+
 def enqueue_threads(db: sqlite3.Connection, uid: str, text: str, images: list[str] | None = None,
                     reply_to_uid: str | None = None) -> None:
     if not notify_threads.enabled():
@@ -280,7 +283,10 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
             if ig_due
         ]
         communities = {f"wvp:{c['id']}": c for c in artist.get("weverse_communities", [])}
+        # Threads 要轉發哪些平台（youtube／weverse／instagram）；沒寫 = 全部。成員留言跟著 weverse
+        th_sources = set(artist.get("threads_sources") or ["youtube", "weverse", "instagram"])
         for source, label, fetch in feeds:
+            threads_ok = _PLATFORM[source.split(":")[0]] in th_sources
             try:
                 videos = fetch()
             except instagram.Throttled as e:
@@ -328,7 +334,9 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                     logging.warning("推播失敗，下輪重試：%s", e)
                     continue
                 th_tags = artist.get("hashtags", [])[:1]  # Threads 一篇只吃一個主題標籤，其餘只是文字
-                if is_post:
+                if not threads_ok:
+                    pass  # 這個平台不發 Threads（config 的 threads_sources），只推 TG
+                elif is_post:
                     # 超過 500 字不截斷：切成多段，第 2 段起接在前一段底下當回覆
                     parts = split_threads_post(artist["name"], v, zh, th_tags, platform, notify_threads.TEXT_LIMIT)
                     prev = None

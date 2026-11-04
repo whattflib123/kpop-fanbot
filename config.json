@@ -3,6 +3,7 @@
     {
       "name": "QWER",
       "hashtags": ["#QWER", "#큐더블유이알"],
+      "threads_sources": ["youtube", "weverse", "instagram"],
       "youtube_channels": [
         {"id": "UCgD0APk2x9uBlLM0UsmhQjw", "label": "QWER 官方 YouTube (@QWER_Band_official)"}
       ],
