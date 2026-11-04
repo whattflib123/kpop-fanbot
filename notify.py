@@ -5,7 +5,6 @@ import os
 import requests
 
 API = "https://api.telegram.org/bot{token}/{method}"
-AI_NOTE = "本文由 AI 自動翻譯上傳"  # 有譯文才加
 
 
 def _call(method: str, **payload) -> dict:
@@ -73,8 +72,6 @@ def format_post(artist: str, video: dict, zh_title: str | None, hashtags: list[s
     lines.append(f"▶ {video['url']}")
     if hashtags:
         lines.append(" ".join(hashtags))
-    if zh_title:
-        lines.append(AI_NOTE)
     return "\n".join(lines)
 
 
@@ -94,44 +91,49 @@ CAPTION_LIMIT = 1024
 MESSAGE_LIMIT = 4096
 
 
-def format_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,
-                        max_len: int = MESSAGE_LIMIT, more: str = "…", platform: str = "Weverse") -> str:
-    """Weverse／Instagram 成員貼文（純文字）。只放譯文；翻譯失敗或不用翻才用原文。超過 max_len 截內文並接 more。"""
+def _post_parts(artist: str, post: dict, hashtags: list[str] | None, platform: str) -> tuple[str, list[str]]:
+    """標題行、尾巴（含影片提示／hashtag）。不放連結（使用者 2026-11-04 決定）。"""
     member = "（會員限定）" if post.get("membership_only") else ""
     if post.get("kind") == "notice":
         head = f"{artist} 官方在 {platform} 發佈了公告！📢"
     else:
         head = f"{artist} {post['author']} 在 {platform} 發佈了新貼文！{'📷' if platform == 'Instagram' else '💬'}{member}"
-    tail = [f"▶ {post['url']}"]
+    tail = []
     if post.get("has_video"):
-        tail.insert(0, "（貼文含影片，請點連結觀看）")
+        tail.append(f"（貼文含影片，請到 {platform} 觀看）")
     if hashtags:
         tail.append(" ".join(hashtags))
-    if zh_body:
-        tail.append(AI_NOTE)
+    return head, tail
+
+
+def format_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,
+                        max_len: int = MESSAGE_LIMIT, more: str = "…", platform: str = "Weverse") -> str:
+    """Weverse／Instagram 成員貼文（純文字）。只放譯文；翻譯失敗或不用翻才用原文。超過 max_len 截內文並接 more。"""
+    head, tail = _post_parts(artist, post, hashtags, platform)
     body = zh_body or post["body"]
 
-    def build(b: str) -> list[str]:
-        return [head, "", b, ""] + tail if b.strip() else [head, ""] + tail
+    def build(b: str) -> str:
+        blocks = [head] + ([b] if b.strip() else []) + (["\n".join(tail)] if tail else [])
+        return "\n\n".join(blocks)
 
-    plain = "\n".join(build(body))
+    plain = build(body)
     if len(plain) > max_len:
         body = body[: max(0, len(body) - (len(plain) - max_len) - len(more))] + more
-        plain = "\n".join(build(body))
+        plain = build(body)
     return plain
 
 
 def split_threads_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None,
                        platform: str, limit: int) -> list[str]:
     """Threads 版：超過 limit 不截斷，切成多段，第 2 段起當前一段的回覆（留言接續）。
-    第 1 段：標題＋內文開頭＋hashtag（主題標籤要在主貼文）；最後一段結尾接連結、AI 註記；中間段只有內文。"""
+    第 1 段：標題＋內文開頭＋hashtag（主題標籤要在主貼文）；最後一段結尾接含影片提示；中間段只有內文。"""
     full = format_weverse_post(artist, post, zh_body, hashtags, max_len=10**9, platform=platform)
     if len(full) <= limit:
         return [full]
-    head, _, rest = full.partition("\n\n")
-    body, _, tail = rest.rpartition("\n\n")  # tail = ▶ 連結／含影片／hashtag／AI 註記
+    head, tail_lines = _post_parts(artist, post, hashtags, platform)
+    body = zh_body or post["body"]
     tag_line = " ".join(hashtags) if hashtags else ""
-    tail = "\n".join(l for l in tail.split("\n") if l != tag_line)
+    tail = "\n".join(l for l in tail_lines if l != tag_line)
     first_fixed = len(head) + 2 + (len(tag_line) + 2 if tag_line else 0)
     parts, cur, cap = [], "", limit - first_fixed - 6  # -6 給「（續）」記號
     for line in body.split("\n"):
@@ -148,7 +150,7 @@ def split_threads_post(artist: str, post: dict, zh_body: str | None, hashtags: l
         s = f"{head}\n\n{p}" if i == 0 else f"（續 {i + 1}/{n}）\n{p}"
         if i == 0 and tag_line:
             s += f"\n\n{tag_line}"
-        if i == n - 1:
+        if i == n - 1 and tail:
             s += f"\n\n{tail}"
         out.append(s[:limit])
     return out
@@ -178,50 +180,26 @@ def _clip(text: str, n: int) -> str:
     return text[: n - 1] + "…" if n > 0 else ""
 
 
-def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None],
-                           zh_reply_to: str | None = None, show_reply_to: bool = False,
-                           limit: int | None = None) -> str:
-    """粉絲（或成員）：被回覆的留言 / 成員 回覆：留言；沒回覆別人就 成員：留言。
+def format_weverse_comment(comments: list[dict], limit: int | None = None) -> str:
+    """成員：留言（原文，不翻譯、不加標題、不附被回覆那句、不放連結；使用者 2026-11-04 決定）。
 
-    comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時被回覆那句只出現一次，
-    回覆每句一行「· 」。
-    不放連結（使用者 2026-11-03 決定；TG／Threads 都掛在原貼文下面，看得到出處）。
-    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠從最早的回覆開始縮，標題、註記保留。
+    comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時每句一行。
+    limit（Threads 500 字）：超過時從最早的留言開始縮。
     """
-    first = comments[0]
-    author = first["author"]
-    rt = first.get("reply_to") if show_reply_to else None
-    bodies = [zh or c["body"] for c, zh in zip(comments, zh_bodies)]
-    quoted = (zh_reply_to or rt["body"]) if rt else ""
-    has_zh = any(zh_bodies)
+    author = comments[0]["author"]
+    bodies = [c["body"] for c in comments]
 
-    def build(q: str, bs: list[str]) -> str:
-        lines = [f"↪ {author} 在 Weverse 留言了 💬"]
-        if rt:
-            lines.append(f"{rt['author'] or '粉絲'}：{q}")
-        label = f"{author} 回覆" if rt else author
-        if len(bs) == 1:
-            lines.append(f"{label}：{bs[0]}")
-        else:
-            lines.append(f"{label}：")
-            lines += [f"· {b}" for b in bs]
-        if has_zh:
-            lines.append(AI_NOTE)
-        return "\n".join(lines)
+    def build(bs: list[str]) -> str:
+        return "\n".join(f"{author}：{b}" for b in bs)
 
-    text = build(quoted, bodies)
-    if not limit or len(text) <= limit:
-        return text
-    if rt:  # 先縮被回覆的那句，至少留「…」
-        quoted = _clip(quoted, max(1, limit - len(build("", bodies))))
-        text = build(quoted, bodies)
-    for i in range(len(bodies)):  # 還不夠：從最早的回覆開始縮
-        over = len(text) - limit
+    text = build(bodies)
+    for i in range(len(bodies)):
+        over = len(text) - limit if limit else 0
         if over <= 0:
             break
         bodies[i] = _clip(bodies[i], max(1, len(bodies[i]) - over))
-        text = build(quoted, bodies)
-    return text[:limit]
+        text = build(bodies)
+    return text[:limit] if limit else text
 
 
 def send_weverse_comment(text: str, reply_to_message_id: int | None) -> int:

@@ -178,7 +178,6 @@ ALERT = TranslateAlert()
 def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts: list[dict], dry_run: bool) -> None:
     """最近 COMMENT_WINDOW_DAYS 天內的成員貼文，檢查底下有沒有新的成員留言。"""
     from notify import format_weverse_comment, send_weverse_comment
-    from translate import TranslateError, translate
 
     source = f"wvc:{community['id']}"
     initialized = db.execute("SELECT 1 FROM sources WHERE source=?", (source,)).fetchone()
@@ -203,7 +202,6 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         logging.info("初始化 %s 留言：記錄 %d 則既有留言，不推播", community["label"], len(comments))
         return
 
-    show_reply_to = bool(community.get("show_reply_to"))
     new = [(p, c) for p, c in comments if not db.execute("SELECT 1 FROM seen WHERE uid=?", (c["uid"],)).fetchone()]
     groups: dict[tuple, list] = {}  # 同一位成員回同一則留言 → 合成一則推（同一輪內）
     for p, c in sorted(new, key=lambda x: x[1]["created"]):
@@ -215,35 +213,29 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
                 db.commit()
                 logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
             continue
-        rt = c["reply_to"] if show_reply_to else None
+        rt = c["reply_to"]
         key = (p["uid"], c["author"], rt["id"]) if rt and rt.get("id") else (c["uid"],)
         groups.setdefault(key, (p, []))[1].append(c)
 
     for p, cs in groups.values():
         first = cs[0]
-        try:
-            zhs = [translate(c["body"], post=True) for c in cs]
-            zh_rt = translate(first["reply_to"]["body"], post=True) if show_reply_to and first["reply_to"] else None
-        except TranslateError as e:
-            ALERT.fail(db, source, {"uid": first["uid"], "title": first["body"], "url": p["url"]}, e)
-            continue
-        for c, zh in zip(cs, zhs):
-            logging.info("新留言 %s | %s → %s", c["author"], c["body"], zh)
+        for c in cs:
+            logging.info("新留言 %s | %s", c["author"], c["body"])
         if len(cs) > 1:
             logging.info("合併 %d 則同一留言的回覆成一則", len(cs))
         if dry_run:
             continue
         row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
-        text = format_weverse_comment(cs, zhs, zh_rt, show_reply_to)
+        text = format_weverse_comment(cs)
         try:
             send_weverse_comment(text, row[0] if row else None)
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        th_text = format_weverse_comment(cs, zhs, zh_rt, show_reply_to, limit=notify_threads.TEXT_LIMIT)
+        th_text = format_weverse_comment(cs, limit=notify_threads.TEXT_LIMIT)
         enqueue_threads(db, first["uid"], th_text, reply_to_uid=p["uid"])
-        for c, zh in zip(cs, zhs):
-            db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
+        for c in cs:
+            db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], None, int(time.time())))
             ALERT.clear(db, c["uid"])
         db.commit()
 

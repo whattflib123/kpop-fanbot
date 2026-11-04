@@ -24,15 +24,14 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 
 （譯文）
 
-▶ https://www.instagram.com/p/...
 #QWER #큐더블유이알
-本文由 AI 自動翻譯上傳
 ```
 
 ### 行為規則
 - **第一次跑某個來源**：既有內容只記錄進 `data/state.db`，不推播。之後只推新的。
 - **翻譯失敗**（API 額度不足、錯誤、被拒、譯文截斷）：不推、下輪重試；同一則失敗 `TRANSLATE_MAX_ATTEMPTS` 次（預設 12，約 1 小時）就放棄。開始失敗、放棄、恢復時私訊 `TELEGRAM_ADMIN_CHAT_ID`。
-- 只有 emoji／符號的內容不送翻譯，直接推原文（不加 AI 註記）。
+- 只有 emoji／符號的內容不送翻譯，直接推原文。
+- 推播不加 AI 翻譯註記；Weverse／IG 貼文不放原文連結，含影片時寫「（貼文含影片，請到 Weverse／Instagram 觀看）」。YouTube 推播附影片連結。
 - **推播失敗**（TG 掛掉）：不記 seen，下輪重試。Threads 失敗不影響 TG，最多重試 5 次。
 - **Threads 一篇只有一個主題標籤**：只放第一個 hashtag，Threads 會把它轉成標籤、顯示時不帶 `#`。
 - Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。留言每 15 分鐘檢查一次（`COMMENT_POLL_SECONDS`），同一輪內同一位成員連回同一則留言會合成一則推。
@@ -70,9 +69,8 @@ SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已�
    - `youtube_channels[].id`：頻道 ID（`UC` 開頭）。打開頻道頁 → 檢視原始碼搜尋 `channelId`，或用 `https://www.youtube.com/@handle` 頁面的 `externalId`。小心同名的非官方頻道。
    - `weverse_communities[].id`：社群 ID，用網址路徑查：
      `python -c "from sources import weverse; print(weverse.community_id('qwer'))"`（`weverse.io/qwer` 的 `qwer`）。
-     `show_reply_to`：成員回覆別人留言時，要不要附上被回覆的那則（粉絲暱稱不顯示）。
      `notices`：`true` = 也抓官方公告。
-     留言格式：`粉絲（或成員名）：被回覆的留言` 換行 `成員 回覆：留言`；沒回覆別人（或 `show_reply_to` 關）就 `成員：留言`。Threads 超過 500 字先縮被回覆那句（加「…」），還不夠才縮成員留言；TG 不截。
+     留言格式只有 `成員：留言`（原文，不翻譯、不附被回覆那句）。同一輪內同一位成員連回同一則留言合成一則，每句一行。Threads 超過 500 字從最早的留言開始縮；TG 不截。
    - `instagram_accounts[]`：`username`、`author`（推播顯示的名字）、`label`（log 用）。對方必須是專業／創作者帳號。
    - 不要的來源整段刪掉即可。
 3. 改 `glossary.json`：團名、成員名、粉絲名的固定譯名（原文 → 譯名）。Weverse 貼文作者名會用 Weverse 官方名，不用另外設。
