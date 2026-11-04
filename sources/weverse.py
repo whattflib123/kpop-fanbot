@@ -92,6 +92,14 @@ def _name(author: dict) -> str:
 def fetch_artist_comments(post_id: str) -> list[dict]:
     """某篇貼文底下的成員留言（含成員回覆別人的留言）。post_id 不含 wvp: 前綴。"""
     data = _get(f"/comment/v1.0/post-{post_id}/artistComments", {"fieldSet": "postArtistCommentsV1", "limit": "50"})
+    # 被回覆留言的作者沒有 artistOfficialProfile，只有成員自取的暱稱（例如 Siyeon 的「밍」），
+    # 用同一批留言的 memberId 對回正式名字
+    official = {}
+    for c in data.get("data", []):
+        a = c.get("author") or {}
+        name = (a.get("artistOfficialProfile") or {}).get("officialName")
+        if a.get("memberId") and name:
+            official[a["memberId"]] = name
     out = []
     for c in data.get("data", []):
         parent = c.get("parent") or {}
@@ -102,7 +110,8 @@ def fetch_artist_comments(post_id: str) -> list[dict]:
             reply_to = {
                 "id": pdata.get("commentId"),  # 同一輪成員連回同一則留言時用來合併
                 "body": pdata["body"].strip(),
-                "author": _name(pauthor) if pauthor.get("profileType") == "ARTIST" else None,  # 粉絲不留暱稱
+                "author": (official.get(pauthor.get("memberId")) or _name(pauthor))
+                if pauthor.get("profileType") == "ARTIST" else None,  # 粉絲不留暱稱
             }
         out.append({
             "uid": f"wvc:{c['commentId']}",
