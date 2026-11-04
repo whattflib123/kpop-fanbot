@@ -222,6 +222,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         first = cs[0]
         try:
             zhs = [translate(c["body"], post=True) for c in cs]
+            zh_rt = translate(first["reply_to"]["body"], post=True) if first.get("reply_to") else None
         except TranslateError as e:
             ALERT.fail(db, source, {"uid": first["uid"], "title": first["body"], "url": p["url"]}, e)
             continue
@@ -232,13 +233,13 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         if dry_run:
             continue
         row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
-        text = format_weverse_comment(cs, zhs)
+        text = format_weverse_comment(cs, zhs, zh_rt)
         try:
             send_weverse_comment(text, row[0] if row else None)
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        th_text = format_weverse_comment(cs, zhs, limit=notify_threads.TEXT_LIMIT)
+        th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT)
         enqueue_threads(db, first["uid"], th_text, reply_to_uid=p["uid"])
         for c, zh in zip(cs, zhs):
             db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
