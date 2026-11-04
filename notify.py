@@ -180,27 +180,37 @@ def _clip(text: str, n: int) -> str:
     return text[: n - 1] + "…" if n > 0 else ""
 
 
-def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None], limit: int | None = None) -> str:
-    """成員：譯文（不加標題、不附被回覆那句、不放連結、不加 AI 註記；使用者 2026-11-04 決定）。
+def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None],
+                           zh_reply_to: str | None = None, limit: int | None = None) -> str:
+    """粉絲（或成員名）：被回覆的留言譯文 換行 成員：回覆譯文；沒回覆別人就只有 成員：譯文。
+    不加標題、「回覆」字樣、連結、AI 註記（使用者 2026-11-04 決定）。
 
-    comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時每句一行。
-    zh_bodies 是對應譯文；None（不用翻，例如只有 emoji）就用原文。
-    limit（Threads 500 字）：超過時從最早的留言開始縮。
+    comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時被回覆那句只出現一次，
+    成員每句一行。zh 為 None（不用翻，例如只有 emoji）就用原文。
+    limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠從最早的回覆開始縮。
     """
     author = comments[0]["author"]
+    rt = comments[0].get("reply_to")
     bodies = [zh or c["body"] for c, zh in zip(comments, zh_bodies)]
+    quoted = (zh_reply_to or rt["body"]) if rt else ""
 
-    def build(bs: list[str]) -> str:
-        return "\n".join(f"{author}：{b}" for b in bs)
+    def build(q: str, bs: list[str]) -> str:
+        lines = [f"{rt['author'] or '粉絲'}：{q}"] if rt else []
+        return "\n".join(lines + [f"{author}：{b}" for b in bs])
 
-    text = build(bodies)
-    for i in range(len(bodies)):
-        over = len(text) - limit if limit else 0
+    text = build(quoted, bodies)
+    if not limit or len(text) <= limit:
+        return text
+    if rt:  # 先縮被回覆的那句，至少留「…」
+        quoted = _clip(quoted, max(1, limit - len(build("", bodies))))
+        text = build(quoted, bodies)
+    for i in range(len(bodies)):  # 還不夠：從最早的回覆開始縮
+        over = len(text) - limit
         if over <= 0:
             break
         bodies[i] = _clip(bodies[i], max(1, len(bodies[i]) - over))
-        text = build(bodies)
-    return text[:limit] if limit else text
+        text = build(quoted, bodies)
+    return text[:limit]
 
 
 def send_weverse_comment(text: str, reply_to_message_id: int | None) -> int:
