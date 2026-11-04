@@ -1,5 +1,6 @@
 """推文文字格式（純文字，TG／Threads 共用）＋ Telegram 推播。"""
 import html
+import json
 import os
 
 import requests
@@ -156,6 +157,25 @@ def split_threads_post(artist: str, post: dict, zh_body: str | None, hashtags: l
     return out
 
 
+def _send_media_group(chat_id: str, media: list[dict]) -> list[dict]:
+    """先讓 Telegram 用網址抓圖；失敗（例如單張超過網址抓圖的 5MB 上限）就自己下載再上傳（上限 10MB）。"""
+    try:
+        return _call("sendMediaGroup", chat_id=chat_id, media=media)
+    except RuntimeError:
+        pass
+    files, up = {}, []
+    for i, m in enumerate(media):
+        r = requests.get(m["media"], timeout=60)
+        r.raise_for_status()
+        files[f"p{i}"] = (f"p{i}.jpg", r.content)
+        up.append({**m, "media": f"attach://p{i}"})
+    url = API.format(token=os.environ["TELEGRAM_BOT_TOKEN"], method="sendMediaGroup")
+    data = requests.post(url, data={"chat_id": chat_id, "media": json.dumps(up)}, files=files, timeout=120).json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram sendMediaGroup（上傳）失敗：{data.get('description')}")
+    return data["result"]
+
+
 def send_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,
                       platform: str = "Weverse") -> int:
     """回傳帶內文那則訊息的 message_id（之後成員留言用回覆掛在它下面）。"""
@@ -168,8 +188,8 @@ def send_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: li
     media = [{"type": "photo", "media": u} for u in photos]
     if length <= CAPTION_LIMIT:
         media[0].update(caption=text, parse_mode="HTML")
-        return _call("sendMediaGroup", chat_id=chat_id, media=media)[0]["message_id"]
-    _call("sendMediaGroup", chat_id=chat_id, media=media)
+        return _send_media_group(chat_id, media)[0]["message_id"]
+    _send_media_group(chat_id, media)
     return _call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)["message_id"]
 
 
