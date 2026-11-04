@@ -180,14 +180,15 @@ def _clip(text: str, n: int) -> str:
     return text[: n - 1] + "…" if n > 0 else ""
 
 
-def format_weverse_comment(comments: list[dict], limit: int | None = None) -> str:
-    """成員：留言（原文，不翻譯、不加標題、不附被回覆那句、不放連結；使用者 2026-11-04 決定）。
+def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None], limit: int | None = None) -> str:
+    """成員：譯文（不加標題、不附被回覆那句、不放連結、不加 AI 註記；使用者 2026-11-04 決定）。
 
     comments 是同一位成員對同一則留言的回覆（同一輪合併，依時間排序）；多則時每句一行。
+    zh_bodies 是對應譯文；None（不用翻，例如只有 emoji）就用原文。
     limit（Threads 500 字）：超過時從最早的留言開始縮。
     """
     author = comments[0]["author"]
-    bodies = [c["body"] for c in comments]
+    bodies = [zh or c["body"] for c, zh in zip(comments, zh_bodies)]
 
     def build(bs: list[str]) -> str:
         return "\n".join(f"{author}：{b}" for b in bs)

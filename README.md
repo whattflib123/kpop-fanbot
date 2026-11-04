@@ -70,7 +70,7 @@ SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已�
    - `weverse_communities[].id`：社群 ID，用網址路徑查：
      `python -c "from sources import weverse; print(weverse.community_id('qwer'))"`（`weverse.io/qwer` 的 `qwer`）。
      `notices`：`true` = 也抓官方公告。
-     留言格式只有 `成員：留言`（原文，不翻譯、不附被回覆那句）。同一輪內同一位成員連回同一則留言合成一則，每句一行。Threads 超過 500 字從最早的留言開始縮；TG 不截。
+     留言格式只有 `成員：譯文`（翻成中文，不附被回覆那句、不加 AI 註記）。同一輪內同一位成員連回同一則留言合成一則，每句一行。Threads 超過 500 字從最早的留言開始縮；TG 不截。
    - `instagram_accounts[]`：`username`、`author`（推播顯示的名字）、`label`（log 用）。對方必須是專業／創作者帳號。
    - 不要的來源整段刪掉即可。
 3. 改 `glossary.json`：團名、成員名、粉絲名的固定譯名（原文 → 譯名）。Weverse 貼文作者名會用 Weverse 官方名，不用另外設。
