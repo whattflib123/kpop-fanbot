@@ -27,14 +27,56 @@ def send_admin(text: str) -> None:
 
 
 # ───── Threads 審核用（review.py）：私訊預覽＋按鈕、收回覆 ─────
+REVIEW_TOGGLES = (("nohead", "去標題"), ("conly", "只發評論"), ("nosep", "拿掉分隔線"))
+
+
+def _review_kb(uid: str, flags: set[str] = frozenset()) -> dict:
+    return {"inline_keyboard": [
+        [{"text": "✅ 發佈", "callback_data": f"th:pub:{uid}"},
+         {"text": "✍️ 加評論", "callback_data": f"th:cmt:{uid}"},
+         {"text": "⏭ 略過", "callback_data": f"th:skip:{uid}"}],
+        [{"text": "✏️ 改寫全文", "callback_data": f"th:rw:{uid}"}],
+        [{"text": ("☑️ " if k in flags else "") + label, "callback_data": f"th:{k}:{uid}"} for k, label in REVIEW_TOGGLES],
+    ]}
+
+
 def send_review(text: str, uid: str) -> int:
-    kb = {"inline_keyboard": [[
-        {"text": "✅ 發佈", "callback_data": f"th:pub:{uid}"},
-        {"text": "✍️ 加評論", "callback_data": f"th:cmt:{uid}"},
-        {"text": "⏭ 略過", "callback_data": f"th:skip:{uid}"},
-    ]]}
     return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=text[:MESSAGE_LIMIT],
-                 reply_markup=kb, disable_web_page_preview=True)["message_id"]
+                 reply_markup=_review_kb(uid), disable_web_page_preview=True)["message_id"]
+
+
+def set_review_keyboard(message_id: int, uid: str, flags: set[str]) -> None:
+    _call("editMessageReplyMarkup", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], message_id=message_id,
+          reply_markup=_review_kb(uid, flags))
+
+
+def ask_rewrite(draft: str) -> int:
+    """草稿放在 <pre>，手機點一下就複製；使用者回覆這則 = 改好的全文。"""
+    head = "✏️ 點下面草稿複製，改好後「回覆」這則訊息貼上全文（照你的版本發，超過 500 字自動切段）：\n\n"
+    room = MESSAGE_LIMIT - len(head) - 20
+    body = html.escape(draft if len(draft) <= room else draft[:room] + "…")
+    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=f"{head}<pre>{body}</pre>",
+                 parse_mode="HTML", reply_markup={"force_reply": True, "input_field_placeholder": "改好的全文"})["message_id"]
+
+
+def split_plain(text: str, limit: int) -> list[str]:
+    """改寫全文用：超過 limit 依行切段，第 2 段起加「（續 n/N）」。"""
+    if len(text) <= limit:
+        return [text]
+    cap = limit - 12
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > cap:
+            if cur:
+                parts.append(cur.rstrip("\n")); cur = ""
+            parts.append(line[:cap]); line = line[cap:]
+        if len(cur) + len(line) + 1 > cap:
+            parts.append(cur.rstrip("\n")); cur = ""
+        cur += line + "\n"
+    parts.append(cur.rstrip("\n"))
+    parts = [p for p in parts if p.strip()]
+    n = len(parts)
+    return [p if i == 0 else f"（續 {i + 1}/{n}）\n{p}" for i, p in enumerate(parts)]
 
 
 def edit_review(message_id: int, status_line: str) -> None:

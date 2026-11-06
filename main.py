@@ -69,9 +69,15 @@ def enqueue_threads(db: sqlite3.Connection, uid: str, text: str, images: list[st
 def flush_threads(db: sqlite3.Connection) -> None:
     if not notify_threads.enabled():
         return
-    rows = db.execute("SELECT uid, payload, reply_to_uid, attempts FROM threads_queue ORDER BY created").fetchall()
-    for uid, payload, reply_to_uid, attempts in rows:
+    uids = [r[0] for r in db.execute("SELECT uid FROM threads_queue ORDER BY created").fetchall()]
+    for uid in uids:
+        # 每則現讀：這輪中途可能被刪或換掉（改寫／只發評論換掉了續段，新續段沿用 #2、#3 的 uid）
+        row = db.execute("SELECT payload, reply_to_uid, attempts FROM threads_queue WHERE uid=?", (uid,)).fetchone()
+        if not row:
+            continue
+        payload, reply_to_uid, attempts = row
         reply_media = None
+        new_parts = None
         p = json.loads(payload)
         if reply_to_uid:
             if db.execute("SELECT 1 FROM threads_queue WHERE uid=?", (reply_to_uid,)).fetchone():
@@ -90,14 +96,17 @@ def flush_threads(db: sqlite3.Connection) -> None:
                 continue
         else:
             status, comment = review.decision(db, uid)
-            if status in ("asked", "await_comment"):
+            if status in review.PENDING:
                 continue  # 等使用者在 TG 按鈕
             if status == "skipped":
                 db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))
                 db.commit()
                 continue
-            if comment:
-                p["text"] = review.with_comment(comment, p["text"])  # 評論在最前面，分隔線，再譯文
+            # 套用審核結果：評論（放最前面）、改寫全文、去標題／只發評論／拿掉分隔線
+            p["text"], new_parts = review.final(db, uid, p["text"])
+            if new_parts is not None:  # 續段換掉：先刪舊的，發成功再排新的
+                db.execute("DELETE FROM threads_queue WHERE uid LIKE ?", (f"{uid}#%",))
+                db.commit()
         try:
             media_id = notify_threads.publish(p["text"], p["images"], reply_media)
         except Exception as e:
@@ -113,6 +122,11 @@ def flush_threads(db: sqlite3.Connection) -> None:
         logging.info("Threads 已發 %s → %s", uid, media_id)
         db.execute("INSERT OR REPLACE INTO threads_posted VALUES (?,?)", (uid, media_id))
         db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))
+        prev = uid
+        for i, part in enumerate(new_parts or [], start=2):  # 改寫後的續段，下一輪接在回覆
+            db.execute("INSERT OR IGNORE INTO threads_queue VALUES (?,?,?,0,?)", (f"{uid}#{i}", json.dumps(
+                {"text": part, "images": []}, ensure_ascii=False), prev, int(time.time())))
+            prev = f"{uid}#{i}"
         db.commit()
         review.mark_posted(db, uid, media_id)
 
