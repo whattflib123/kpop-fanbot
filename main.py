@@ -110,6 +110,7 @@ def flush_threads(db: sqlite3.Connection) -> None:
 
 
 COMMENT_WINDOW_DAYS = 7
+COMMENT_HOLD_MINUTES = float(os.environ.get("COMMENT_HOLD_MINUTES", "60"))  # 其他成員直接留言等多久沒人回才推
 _ig_last_poll = 0.0  # IG 輪詢比其他來源慢（IG_POLL_SECONDS），避免吃光 Meta 的限流額度
 _comments_last_poll: dict[str, float] = {}  # 成員留言每 COMMENT_POLL_SECONDS 抓一次（預設 15 分），成員連回的幾句才合得成一則
 
@@ -218,12 +219,19 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
                 logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
             continue
         rt = c["reply_to"]
-        # 貼文主人回粉絲留言 → 整則不推（TG／Threads 都不發），只記 seen；回其他成員照推（使用者 2026-11-06 決定）
-        if rt and not rt.get("author") and c["author"] == p.get("author"):
+        # 成員回粉絲留言 → 整則不推（TG／Threads 都不發），只記 seen；回其他成員照推（使用者 2026-11-06 決定）
+        skip = "成員回粉絲" if rt and not rt.get("author") else None
+        if not rt and c["author"] != p.get("author"):
+            # 其他成員直接留言：先等 COMMENT_HOLD_MINUTES，期間有成員回它就不單獨推（回覆那則會帶出這句），沒人回才推
+            if any((x["reply_to"] or {}).get("id") and f"wvc:{x['reply_to']['id']}" == c["uid"] for _, x in comments):
+                skip = "已有成員回覆，由回覆那則帶出"
+            elif time.time() - c["created"] / 1000 < COMMENT_HOLD_MINUTES * 60:
+                continue  # 還在等，下輪再看（不記 seen）
+        if skip:
             if not dry_run:
                 db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], None, int(time.time())))
                 db.commit()
-            logging.info("留言略過（貼文主人回粉絲）%s | %s", c["author"], c["body"][:40])
+            logging.info("留言略過（%s）%s | %s", skip, c["author"], c["body"][:40])
             continue
         key = (p["uid"], c["author"], rt["id"]) if rt and rt.get("id") else (c["uid"],)
         groups.setdefault(key, (p, []))[1].append(c)
