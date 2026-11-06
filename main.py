@@ -218,6 +218,13 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
                 logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
             continue
         rt = c["reply_to"]
+        # 貼文主人回粉絲留言 → 整則不推（TG／Threads 都不發），只記 seen；回其他成員照推（使用者 2026-11-06 決定）
+        if rt and not rt.get("author") and c["author"] == p.get("author"):
+            if not dry_run:
+                db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], None, int(time.time())))
+                db.commit()
+            logging.info("留言略過（貼文主人回粉絲）%s | %s", c["author"], c["body"][:40])
+            continue
         key = (p["uid"], c["author"], rt["id"]) if rt and rt.get("id") else (c["uid"],)
         groups.setdefault(key, (p, []))[1].append(c)
 

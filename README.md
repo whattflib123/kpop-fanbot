@@ -34,7 +34,7 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 - 推播不加 AI 翻譯註記；Weverse／IG 貼文不放原文連結，含影片時寫「（貼文含影片，請到 Weverse／Instagram 觀看）」。YouTube 推播附影片連結。
 - **推播失敗**（TG 掛掉）：不記 seen，下輪重試。Threads 失敗不影響 TG，最多重試 5 次。
 - **Threads 一篇只有一個主題標籤**：只放第一個 hashtag，Threads 會把它轉成標籤、顯示時不帶 `#`。
-- Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。留言每 15 分鐘檢查一次（`COMMENT_POLL_SECONDS`），同一輪內同一位成員連回同一則留言會合成一則推。
+- Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。貼文主人回粉絲的留言整則不推（TG／Threads 都不發，只記 seen）；回其他成員照推。留言每 15 分鐘檢查一次（`COMMENT_POLL_SECONDS`），同一輪內同一位成員連回同一則留言會合成一則推。
 - Weverse 官方公告：`weverse_communities[].notices` 設 `true` 才抓。列表只有標題，沒看過的才打 detail 抓內文和照片；會員限定公告跳過。標題「{團名} 官方在 Weverse 發佈了公告！📢」。
 
 ### Threads 發文前審核
