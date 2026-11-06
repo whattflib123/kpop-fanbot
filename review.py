@@ -6,6 +6,9 @@
    - 發佈：approved，下輪 flush 直接發。
    - 加評論：await_comment，請使用者回一段文字；收到後把評論放在貼文最前面，轉 approved。
    - 略過：skipped，從佇列刪掉這篇和它的續段；之後這篇底下的成員留言也不發。
+   - ✏️ 改寫：bot 傳整篇草稿（點一下可複製），使用者回覆改好的全文 → 照這版發（超過 500 字自動切段接回覆），轉 approved。
+   - 快速切換（可多選，按了按鈕前面打勾）：去標題（拿掉第一行「XX 發佈了新貼文」）、只發評論（不附譯文和續段，
+     要再按加評論）、拿掉分隔線（評論和譯文之間不放「以下為翻譯」）。切換只決定格式，最後還是要按發佈或加評論。
 3. THREADS_REVIEW_HOURS（預設 24）小時沒回 → 自動發佈。
 只審貼文（第 1 段）；續段跟著第 1 段，成員留言回覆不審。
 
@@ -21,12 +24,44 @@ import time
 import notify
 import notify_threads
 
-STATES = ("asked", "await_comment", "approved", "skipped")
+STATES = ("asked", "await_comment", "await_rewrite", "approved", "skipped")
+PENDING = ("asked", "await_comment", "await_rewrite")  # 還在等使用者
 SEPARATOR = "——— 以下為翻譯 ———"  # 使用者評論和譯文之間
+FLAGS = {"nohead": "去標題", "conly": "只發評論", "nosep": "拿掉分隔線"}
 
 
 def with_comment(comment: str, text: str) -> str:
     return f"{comment}\n\n{SEPARATOR}\n\n{text}"
+
+
+def compose(text: str, comment: str | None, flags: set[str]) -> str:
+    """第 1 段的最終內容。text 是原本第 1 段（標題行＋空行＋內文…）。"""
+    if "nohead" in flags and "\n\n" in text:
+        text = text.split("\n\n", 1)[1]
+    if not comment:
+        return text
+    if "conly" in flags:
+        return comment
+    return f"{comment}\n\n{text}" if "nosep" in flags else with_comment(comment, text)
+
+
+def _flags(db: sqlite3.Connection, uid: str) -> set[str]:
+    row = db.execute("SELECT flags FROM threads_review WHERE uid=?", (uid,)).fetchone()
+    return set(json.loads(row[0])) if row and row[0] else set()
+
+
+def final(db: sqlite3.Connection, uid: str, text: str) -> tuple[str, list[str] | None]:
+    """flush 用：回 (第 1 段要發的內容, 續段)。續段 None = 照原本佇列裡的續段；list = 換成這些（[] = 不發續段）。"""
+    row = db.execute("SELECT comment, override FROM threads_review WHERE uid=?", (uid,)).fetchone()
+    if not row:
+        return text, None
+    comment, override = row
+    if override:
+        parts = notify.split_plain(override, notify_threads.TEXT_LIMIT)
+        return parts[0], parts[1:]
+    flags = _flags(db, uid)
+    out = compose(text, comment, flags)
+    return out, ([] if comment and "conly" in flags else None)
 
 
 def enabled() -> bool:
@@ -43,6 +78,10 @@ def init_db(db: sqlite3.Connection) -> None:
     db.execute("CREATE TABLE IF NOT EXISTS threads_review (uid TEXT PRIMARY KEY, message_id INTEGER, prompt_id INTEGER,"
                " status TEXT, comment TEXT, created INTEGER)")
     db.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
+    cols = {r[1] for r in db.execute("PRAGMA table_info(threads_review)")}
+    for col in ("override", "flags"):  # 2026-11-06 加：改寫全文、快速切換
+        if col not in cols:
+            db.execute(f"ALTER TABLE threads_review ADD COLUMN {col} TEXT")
 
 
 def ask(db: sqlite3.Connection, uid: str, text: str, n_parts: int, n_photos: int, limit: int) -> None:
@@ -61,7 +100,8 @@ def ask(db: sqlite3.Connection, uid: str, text: str, n_parts: int, n_photos: int
     except Exception as e:
         logging.warning("送審核預覽失敗 %s，改為直接發：%s", uid, e)
         return
-    db.execute("INSERT OR REPLACE INTO threads_review VALUES (?,?,?,?,?,?)", (uid, mid, None, "asked", None, int(time.time())))
+    db.execute("INSERT OR REPLACE INTO threads_review (uid, message_id, prompt_id, status, comment, created)"
+               " VALUES (?,?,?,?,?,?)", (uid, mid, None, "asked", None, int(time.time())))
     db.commit()
 
 
@@ -71,7 +111,7 @@ def decision(db: sqlite3.Connection, uid: str) -> tuple[str, str | None]:
     if not row:
         return "approved", None
     status, comment, created, mid = row
-    if status in ("asked", "await_comment") and time.time() - created >= timeout_sec():
+    if status in PENDING and time.time() - created >= timeout_sec():
         db.execute("UPDATE threads_review SET status='approved' WHERE uid=?", (uid,))
         db.commit()
         _edit(mid, f"⏰ {os.environ.get('THREADS_REVIEW_HOURS', '24')} 小時未回，已自動發佈")
@@ -141,6 +181,15 @@ def _on_callback(db: sqlite3.Connection, cq: dict, admin: str) -> None:
         notify.answer_callback(cq["id"], "這篇已處理過")
         return
     status, mid = row
+    if action in FLAGS:
+        flags = _flags(db, uid) ^ {action}
+        db.execute("UPDATE threads_review SET flags=? WHERE uid=?", (json.dumps(sorted(flags)), uid))
+        notify.set_review_keyboard(mid, uid, flags)
+        notify.answer_callback(cq["id"], f"{FLAGS[action]}：{'開' if action in flags else '關'}")
+        return
+    if action == "pub" and "conly" in _flags(db, uid):
+        notify.answer_callback(cq["id"], "「只發評論」要先按加評論")
+        return
     if action == "pub":
         db.execute("UPDATE threads_review SET status='approved' WHERE uid=?", (uid,))
         notify.answer_callback(cq["id"], "下一輪發佈")
@@ -154,6 +203,19 @@ def _on_callback(db: sqlite3.Connection, cq: dict, admin: str) -> None:
         pid = notify.ask_comment(f"回覆這則訊息，輸入要放在貼文最前面的評論（{uid}）")
         db.execute("UPDATE threads_review SET status='await_comment', prompt_id=? WHERE uid=?", (pid, uid))
         notify.answer_callback(cq["id"], "請回覆評論")
+    elif action == "rw":
+        rows = db.execute("SELECT uid, payload FROM threads_queue WHERE uid=? OR uid LIKE ?", (uid, f"{uid}#%")).fetchall()
+        rows.sort(key=lambda r: int(r[0].rsplit("#", 1)[1]) if "#" in r[0] else 1)  # 第 1 段、#2、#3…（#10 排在 #9 後）
+        parts = [r[1] for r in rows]
+        if not parts:
+            notify.answer_callback(cq["id"], "這篇已不在佇列")
+            return
+        texts = [json.loads(p)["text"] for p in parts]
+        texts[0] = compose(texts[0], None, _flags(db, uid))  # 去標題有開就給沒標題的草稿
+        draft = "\n".join([texts[0]] + [t.split("\n", 1)[1] if t.startswith("（續 ") else t for t in texts[1:]])
+        pid = notify.ask_rewrite(draft)
+        db.execute("UPDATE threads_review SET status='await_rewrite', prompt_id=? WHERE uid=?", (pid, uid))
+        notify.answer_callback(cq["id"], "複製草稿改好後回覆")
     logging.info("Threads 審核 %s → %s", uid, action)
 
 
@@ -164,21 +226,30 @@ def _on_message(db: sqlite3.Connection, msg: dict) -> None:
     reply_id = (msg.get("reply_to_message") or {}).get("message_id")
     row = None
     if reply_id:
-        row = db.execute("SELECT uid, message_id FROM threads_review WHERE status='await_comment' AND prompt_id=?", (reply_id,)).fetchone()
-    if not row:  # 沒用回覆：拿最近一則等評論的
-        row = db.execute("SELECT uid, message_id FROM threads_review WHERE status='await_comment' ORDER BY created DESC").fetchone()
+        row = db.execute("SELECT uid, message_id, status FROM threads_review WHERE status IN ('await_comment','await_rewrite')"
+                         " AND prompt_id=?", (reply_id,)).fetchone()
+    if not row:  # 沒用回覆：拿最近一則等評論／改寫的
+        row = db.execute("SELECT uid, message_id, status FROM threads_review WHERE status IN ('await_comment','await_rewrite')"
+                         " ORDER BY created DESC").fetchone()
     if not row:
         return
-    uid, mid = row
+    uid, mid, status = row
     q = db.execute("SELECT payload FROM threads_queue WHERE uid=?", (uid,)).fetchone()
     if not q:
         db.execute("DELETE FROM threads_review WHERE uid=?", (uid,))
         notify.send_admin("這篇已不在佇列，評論沒有加上")
         return
+    if status == "await_rewrite":
+        db.execute("UPDATE threads_review SET status='approved', override=? WHERE uid=?", (text, uid))
+        n = len(notify.split_plain(text, notify_threads.TEXT_LIMIT))
+        _edit(mid, f"✅ 已改寫，下一輪發佈" + (f"（分 {n} 段）" if n > 1 else ""))
+        logging.info("Threads 審核 %s 改寫 %d 字", uid, len(text))
+        return
     body = json.loads(q[0])["text"]
-    room = notify_threads.TEXT_LIMIT - len(body) - len(SEPARATOR) - 4
-    if len(text) > room:
-        notify.send_admin(f"評論太長（{len(text)} 字），最多 {room} 字，請再回一次")
+    flags = _flags(db, uid)
+    over = len(compose(body, text, flags)) - notify_threads.TEXT_LIMIT
+    if over > 0:
+        notify.send_admin(f"評論太長（{len(text)} 字），最多 {len(text) - over} 字，請再回一次")
         return
     db.execute("UPDATE threads_review SET status='approved', comment=? WHERE uid=?", (text, uid))
     _edit(mid, f"✅ 已加評論，下一輪發佈：\n{text}")
