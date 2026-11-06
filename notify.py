@@ -215,7 +215,7 @@ def _clip(text: str, n: int) -> str:
 
 
 def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None],
-                           zh_reply_to: str | None = None, limit: int | None = None) -> str:
+                           zh_reply_to: str | None = None, limit: int | None = None, quote: bool = True) -> str:
     """粉絲（或成員名）：被回覆的留言譯文 換行 成員：回覆譯文；沒回覆別人就只有 成員：譯文。
     不加標題、「回覆」字樣、連結、AI 註記（使用者 2026-11-04 決定）。
 
@@ -224,7 +224,7 @@ def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None],
     limit（Threads 500 字）：超過時先縮被回覆的那句，還不夠從最早的回覆開始縮。
     """
     author = comments[0]["author"]
-    rt = comments[0].get("reply_to")
+    rt = comments[0].get("reply_to") if quote else None  # quote=False：接在被回覆留言的推播底下，不重複引用
     bodies = [zh or c["body"] for c, zh in zip(comments, zh_bodies)]
     quoted = (zh_reply_to or rt["body"]) if rt else ""
 
