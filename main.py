@@ -44,6 +44,8 @@ def open_db() -> sqlite3.Connection:
     # Threads：TG 推成功後排進佇列，失敗不影響 TG，下輪重試
     db.execute("CREATE TABLE IF NOT EXISTS threads_queue (uid TEXT PRIMARY KEY, payload TEXT, reply_to_uid TEXT, attempts INTEGER, created INTEGER)")
     db.execute("CREATE TABLE IF NOT EXISTS threads_posted (uid TEXT PRIMARY KEY, media_id TEXT)")
+    # 留言 uid → 推播時那一則的第一個 uid（合併推播時 Threads 只記第一個），之後有人回這則留言就接在它底下
+    db.execute("CREATE TABLE IF NOT EXISTS comment_heads (uid TEXT PRIMARY KEY, head TEXT)")
     # 翻譯失敗次數；到上限就放棄那則（記 seen、不推）
     db.execute("CREATE TABLE IF NOT EXISTS translate_fail (uid TEXT PRIMARY KEY, attempts INTEGER)")
     review.init_db(db)  # Threads 發文前審核
@@ -80,6 +82,12 @@ def flush_threads(db: sqlite3.Connection) -> None:
                 continue
             row = db.execute("SELECT media_id FROM threads_posted WHERE uid=?", (reply_to_uid,)).fetchone()
             reply_media = row[0] if row else None
+            if not reply_media and reply_to_uid.startswith("wvc:"):
+                # 要接的留言沒發上 Threads（原貼文被略過等）→ 這則沒引用原句、單獨發看不懂，不發
+                logging.info("Threads 略過 %s（被回覆的留言沒發過 Threads）", uid)
+                db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))
+                db.commit()
+                continue
         else:
             status, comment = review.decision(db, uid)
             if status in ("asked", "await_comment"):
@@ -238,9 +246,13 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
 
     for p, cs in groups.values():
         first = cs[0]
+        # 被回覆的留言我們推過 → 接成討論串：TG／Threads 掛在那則留言底下，不再重複引用原句
+        parent = f"wvc:{first['reply_to']['id']}" if first.get("reply_to") and first["reply_to"].get("id") else None
+        parent_tg = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (parent,)).fetchone() if parent else None
+        threaded = bool(parent_tg)
         try:
             zhs = [translate(c["body"], post=True) for c in cs]
-            zh_rt = translate(first["reply_to"]["body"], post=True) if first.get("reply_to") else None
+            zh_rt = translate(first["reply_to"]["body"], post=True) if first.get("reply_to") and not threaded else None
         except TranslateError as e:
             ALERT.fail(db, source, {"uid": first["uid"], "title": first["body"], "url": p["url"]}, e)
             continue
@@ -250,16 +262,25 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
             logging.info("合併 %d 則同一留言的回覆成一則", len(cs))
         if dry_run:
             continue
-        row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
-        text = format_weverse_comment(cs, zhs, zh_rt)
+        if threaded:
+            row = parent_tg
+            head = db.execute("SELECT head FROM comment_heads WHERE uid=?", (parent,)).fetchone()
+            th_parent = head[0] if head else parent
+            logging.info("接在已推過的留言底下 %s", parent)
+        else:
+            row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
+            th_parent = p["uid"]
+        text = format_weverse_comment(cs, zhs, zh_rt, quote=not threaded)
         try:
-            send_weverse_comment(text, row[0] if row else None)
+            msg_id = send_weverse_comment(text, row[0] if row else None)
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT)
-        enqueue_threads(db, first["uid"], th_text, reply_to_uid=p["uid"])
+        th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT, quote=not threaded)
+        enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent)
         for c, zh in zip(cs, zhs):
+            db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (c["uid"], msg_id))
+            db.execute("INSERT OR REPLACE INTO comment_heads VALUES (?,?)", (c["uid"], first["uid"]))
             db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
             ALERT.clear(db, c["uid"])
         db.commit()
