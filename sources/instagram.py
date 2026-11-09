@@ -73,6 +73,9 @@ def fetch_posts(account: dict, limit: int = 5) -> list[dict]:
             "title": caption[:80],
             "body": caption,
             "photos": [p for p in photos if p],
+            # TG 用：照原順序的照片／影片（影片傳不了時退回 photos 的縮圖）
+            "media": [{"type": "video" if x.get("media_type") == "VIDEO" else "photo", "url": x["media_url"]}
+                      for x in items if x.get("media_url")],
             "has_video": m.get("media_type") == "VIDEO" or any(x.get("media_type") == "VIDEO" for x in items),
             "url": m["permalink"],
             # Graph API 給 +0000，換成 fromisoformat 吃得下的 +00:00

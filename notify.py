@@ -2,6 +2,7 @@
 import html
 import io
 import json
+import logging
 import os
 
 import requests
@@ -135,8 +136,10 @@ CAPTION_LIMIT = 1024
 MESSAGE_LIMIT = 4096
 
 
-def _post_parts(artist: str, post: dict, hashtags: list[str] | None, platform: str) -> tuple[str, list[str]]:
-    """標題行、尾巴（含影片提示／hashtag）。不放連結（使用者 2026-11-04 決定）。"""
+def _post_parts(artist: str, post: dict, hashtags: list[str] | None, platform: str,
+                link: str | None = None) -> tuple[str, list[str]]:
+    """標題行、尾巴（含影片提示／hashtag）。預設不放連結（使用者 2026-11-04 決定）；
+    只有 IG 推 TG 帶 link（2026-11-09 決定）。"""
     member = "（會員限定）" if post.get("membership_only") else ""
     if post.get("kind") == "notice":
         head = f"{artist} 官方在 {platform} 發佈了公告！📢"
@@ -147,13 +150,16 @@ def _post_parts(artist: str, post: dict, hashtags: list[str] | None, platform: s
         tail.append(f"（貼文含影片，請到 {platform} 觀看）")
     if hashtags:
         tail.append(" ".join(hashtags))
+    if link:
+        tail.append(f"🔗 {link}")
     return head, tail
 
 
 def format_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,
-                        max_len: int = MESSAGE_LIMIT, more: str = "…", platform: str = "Weverse") -> str:
+                        max_len: int = MESSAGE_LIMIT, more: str = "…", platform: str = "Weverse",
+                        link: str | None = None) -> str:
     """Weverse／Instagram 成員貼文（純文字）。只放譯文；翻譯失敗或不用翻才用原文。超過 max_len 截內文並接 more。"""
-    head, tail = _post_parts(artist, post, hashtags, platform)
+    head, tail = _post_parts(artist, post, hashtags, platform, link)
     body = zh_body or post["body"]
 
     def build(b: str) -> str:
@@ -213,40 +219,84 @@ def _shrink(raw: bytes, side: int = 2560) -> bytes:
         return raw
 
 
+UPLOAD_LIMIT = 50 * 1024 * 1024  # Bot API 自己上傳的上限
+
+
+def _download(m: dict) -> tuple[str, bytes]:
+    """下載一個 media，回傳 (檔名, 內容)。照片壓縮；影片超過上傳上限丟 RuntimeError。"""
+    r = requests.get(m["media"], timeout=180)
+    r.raise_for_status()
+    if m["type"] == "video":
+        if len(r.content) > UPLOAD_LIMIT:
+            raise RuntimeError(f"影片 {len(r.content) // 1024 // 1024}MB 超過 Telegram 上傳上限")
+        return "v.mp4", r.content
+    return "p.jpg", _shrink(r.content)
+
+
 def _send_media_group(chat_id: str, media: list[dict]) -> list[dict]:
-    """先讓 Telegram 用網址抓圖；失敗（例如單張超過網址抓圖的 5MB 上限）就自己下載、壓縮再上傳。"""
+    """先讓 Telegram 用網址抓（照片 5MB、影片 20MB 上限）；失敗就自己下載（照片壓縮）再上傳。
+    只有一個且是影片時改用 sendVideo（sendMediaGroup 要 2 個以上）。"""
+    single_video = len(media) == 1 and media[0]["type"] == "video"
     try:
+        if single_video:
+            m = media[0]
+            extra = {k: m[k] for k in ("caption", "parse_mode") if k in m}
+            return [_call("sendVideo", chat_id=chat_id, video=m["media"], supports_streaming=True, **extra)]
         return _call("sendMediaGroup", chat_id=chat_id, media=media)
     except RuntimeError:
         pass
-    files, up = {}, []
+    files, up, total = {}, [], 0
     for i, m in enumerate(media):
-        r = requests.get(m["media"], timeout=60)
-        r.raise_for_status()
-        files[f"p{i}"] = (f"p{i}.jpg", _shrink(r.content))
-        up.append({**m, "media": f"attach://p{i}"})
-    url = API.format(token=os.environ["TELEGRAM_BOT_TOKEN"], method="sendMediaGroup")
-    data = requests.post(url, data={"chat_id": chat_id, "media": json.dumps(up)}, files=files, timeout=120).json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Telegram sendMediaGroup（上傳）失敗：{data.get('description')}")
-    return data["result"]
+        name, raw = _download(m)
+        total += len(raw)
+        files[f"f{i}"] = (f"f{i}_{name}", raw)
+        up.append({**m, "media": f"attach://f{i}"})
+    if total > UPLOAD_LIMIT:
+        raise RuntimeError(f"整組 {total // 1024 // 1024}MB 超過 Telegram 上傳上限")
+    if single_video:
+        m = up[0]
+        data = {"chat_id": chat_id, "supports_streaming": "true", "video": m["media"],
+                **{k: m[k] for k in ("caption", "parse_mode") if k in m}}
+        method = "sendVideo"
+    else:
+        data = {"chat_id": chat_id, "media": json.dumps(up)}
+        method = "sendMediaGroup"
+    url = API.format(token=os.environ["TELEGRAM_BOT_TOKEN"], method=method)
+    res = requests.post(url, data=data, files=files, timeout=300).json()
+    if not res.get("ok"):
+        raise RuntimeError(f"Telegram {method}（上傳）失敗：{res.get('description')}")
+    return [res["result"]] if single_video else res["result"]
 
 
-def send_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,
-                      platform: str = "Weverse") -> int:
-    """回傳帶內文那則訊息的 message_id（之後成員留言用回覆掛在它下面）。"""
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-    photos = post.get("photos", [])[:10]
-    plain = format_weverse_post(artist, post, zh_body, hashtags, platform=platform)
-    text, length = html.escape(plain), len(plain)
-    if not photos:
-        return _call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)["message_id"]
-    media = [{"type": "photo", "media": u} for u in photos]
-    if length <= CAPTION_LIMIT:
+def _send_with_media(chat_id: str, media: list[dict], plain: str) -> int:
+    """送相簿（文字短就當第一個的 caption，長就另發一則），回傳帶內文那則的 message_id。"""
+    text = html.escape(plain)
+    if len(plain) <= CAPTION_LIMIT:
         media[0].update(caption=text, parse_mode="HTML")
         return _send_media_group(chat_id, media)[0]["message_id"]
     _send_media_group(chat_id, media)
     return _call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)["message_id"]
+
+
+def send_weverse_post(artist: str, post: dict, zh_body: str | None, hashtags: list[str] | None = None,
+                      platform: str = "Weverse") -> int:
+    """回傳帶內文那則訊息的 message_id（之後成員留言用回覆掛在它下面）。
+    IG：直接傳影片＋照片並附連結；影片傳不了就退回縮圖＋「請到 IG 觀看」。"""
+    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+    link = post.get("url") if platform == "Instagram" else None
+    items = post.get("media", [])[:10]
+    if platform == "Instagram" and any(m["type"] == "video" for m in items):
+        plain = format_weverse_post(artist, {**post, "has_video": False}, zh_body, hashtags, platform=platform, link=link)
+        try:
+            return _send_with_media(chat_id, [{"type": m["type"], "media": m["url"]} for m in items], plain)
+        except Exception as e:
+            logging.warning("IG 影片傳 TG 失敗，改傳縮圖：%s", e)
+    photos = post.get("photos", [])[:10]
+    plain = format_weverse_post(artist, post, zh_body, hashtags, platform=platform, link=link)
+    if not photos:
+        return _call("sendMessage", chat_id=chat_id, text=html.escape(plain), parse_mode="HTML",
+                     disable_web_page_preview=True)["message_id"]
+    return _send_with_media(chat_id, [{"type": "photo", "media": u} for u in photos], plain)
 
 
 def _clip(text: str, n: int) -> str:
