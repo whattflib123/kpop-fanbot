@@ -42,6 +42,18 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 審核靠 bot 在兩輪之間長輪詢 `getUpdates`：同一個 bot token 不能有第二個程式同時 `getUpdates`（會 `409 Conflict`），本機要用 bot 收訊息時先停遠端容器。
 - 抓不到：IG 限時動態、IG 廣播頻道、成員在別人 IG 貼文下的留言（API 不提供）。
 
+## IG 短影音排程（選用）
+- 自己定好時間和文案，bot 時間到自動發 Reels 到自己的 IG 專業帳號（`META_IG_USER_ID`），發完私訊 `TELEGRAM_ADMIN_CHAT_ID`：IG 貼文連結（點進去按「分享」轉到 Threads，Threads 上才看得到是從你的 IG 分享的）＋你事先寫好的 Threads 文案（點一下複製）。
+- 本機用 `ig_schedule.py` 管理（要 paramiko，連線沿用部署設定）：
+  ```bash
+  python ig_schedule.py add 影片.mp4 --at "2026-11-10 20:00" --caption-file ig.txt --threads-file threads.txt
+  python ig_schedule.py list      # 排程和狀態（pending／posted／failed＋連結或錯誤）
+  python ig_schedule.py rm <id>   # 取消
+  ```
+  影片推到遠端 `data/ig_schedule/`、排程寫在同目錄 `schedule.json`；`--at` 是本機時區；可加 `--cover-ms` 選封面（第幾毫秒）。有 ffprobe 會檢查長度（3 秒～15 分）和 9:16。
+- bot 端 `ig_publish.py`：有排程快到就提早結束等待、準時發；resumable 上傳（影片不用公開網址）→ 等 IG 處理 → 發佈 → 抓連結。發成功刪掉 NAS 上的影片；失敗隔 10 分重試，`IG_MAX_ATTEMPTS`（預設 3）次後放棄並私訊。狀態在 `state.db` 的 `ig_scheduled`。
+- 權限：token 要多一個 `instagram_content_publish`（重拿 user token 時一起勾，跑 `meta_setup.py` 換粉專 token 再部署）。沒有的話發佈會回 `(#10) Requires instagram_content_publish permission`。
+
 ## 架構
 
 ```
@@ -108,7 +120,7 @@ Business Discovery 只能用「自己的 IG 專業帳號」去查別人的專業
 2. 建一個 **Facebook 粉絲專頁**，粉專設定 → 已連結的帳號 → 連結這個 IG。
 3. Meta 開發者 app（可以跟 Threads 同一個）→ 新增使用案例，選 Instagram 相關、**透過 Facebook 登入** 的那個。
 4. 工具 → **Graph API 測試工具** → 選 app → 取得使用者存取權杖，勾：
-   `pages_show_list`、`pages_read_engagement`、`instagram_basic`、`instagram_manage_insights`（少這個會回 `#10 Application does not have permission`）。
+   `pages_show_list`、`pages_read_engagement`、`instagram_basic`、`instagram_manage_insights`（要排程發 IG 短影音再加 `instagram_content_publish`）（少這個會回 `#10 Application does not have permission`）。
    登入時要勾選你的粉專和 IG。如果之前授權過、沒出現選擇畫面：Facebook 設定 → 商業整合 → 移除 app 後重來。
 5. 填 `.env`：`META_USER_TOKEN`＝剛拿到的 token，`META_APP_SECRET`＝應用程式設定 → 基本資料 → 應用程式密鑰。
 6. `python meta_setup.py`：換長效 token → 取 **不會過期的粉專 token**，寫回 `.env` 的 `META_PAGE_TOKEN`、`META_IG_USER_ID`，並檢查 `config.json` 的 IG 帳號都查得到。
