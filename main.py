@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import notify_threads
+import ig_publish
 import review
 from sources import instagram, weverse, youtube
 
@@ -48,6 +49,7 @@ def open_db() -> sqlite3.Connection:
     db.execute("CREATE TABLE IF NOT EXISTS comment_heads (uid TEXT PRIMARY KEY, head TEXT)")
     # 翻譯失敗次數；到上限就放棄那則（記 seen、不推）
     db.execute("CREATE TABLE IF NOT EXISTS translate_fail (uid TEXT PRIMARY KEY, attempts INTEGER)")
+    ig_publish.init_db(db)  # IG Reels 排程發佈
     review.init_db(db)  # Threads 發文前審核
     return db
 
@@ -425,7 +427,12 @@ def main() -> None:
         run_once(db, args.dry_run)
         if args.once or args.dry_run:
             break
-        review.wait(db, interval)  # 期間長輪詢 TG，處理審核按鈕／評論
+        try:
+            ig_publish.run(db)  # 時間到的 IG 排程短影音
+        except Exception as e:
+            logging.warning("IG 排程檢查失敗：%s", e)
+        nxt = ig_publish.seconds_to_next(db)  # 有排程快到了就提早醒來，準時發
+        review.wait(db, interval if nxt is None else min(interval, nxt + 1))  # 期間長輪詢 TG，處理審核按鈕／評論
 
 
 if __name__ == "__main__":
