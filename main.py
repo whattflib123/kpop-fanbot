@@ -209,6 +209,11 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
     from translate import TranslateError, translate
 
     source = f"wvc:{community['id']}"
+    if community.get("comments") is False:
+        # config 關掉成員留言：不抓不推；清掉初始化紀錄，之後再打開會重新初始化（既有留言只記 seen、不洗版）
+        if not dry_run and db.execute("DELETE FROM sources WHERE source=?", (source,)).rowcount:
+            db.commit()
+        return
     initialized = db.execute("SELECT 1 FROM sources WHERE source=?", (source,)).fetchone()
     if initialized and time.time() - _comments_last_poll.get(source, 0) < int(os.environ.get("COMMENT_POLL_SECONDS", "900")) - 30:
         return

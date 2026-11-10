@@ -34,7 +34,7 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 - 推播不加 AI 翻譯註記；Weverse 貼文不放原文連結，含影片時寫「（貼文含影片，請到 Weverse 觀看）」。IG 推 TG 直接附影片＋照片和貼文連結（影片抓不到或超過 50MB 改附縮圖＋「請到 Instagram 觀看」）；Threads 一律不放連結。YouTube 推播附影片連結。
 - **推播失敗**（TG 掛掉）：不記 seen，下輪重試。Threads 失敗不影響 TG，最多重試 5 次。
 - **Threads 一篇只有一個主題標籤**：只放第一個 hashtag，Threads 會把它轉成標籤、顯示時不帶 `#`。
-- Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。成員回粉絲的留言整則不推（TG／Threads 都不發，只記 seen）；回其他成員照推。其他成員（非貼文主人）直接留言先等 `COMMENT_HOLD_MINUTES`（預設 60）分鐘：期間有成員回它就不單獨推（回覆那則會帶出這句），沒人回才推。被回覆的留言已經推過（例如超過等待時間才回、或回貼文主人的直接留言）→ 接成討論串：TG／Threads 掛在那則留言推播底下，只放回覆，不重複引用原句（`comment_heads` 表記合併推播的第一則，`tg_messages` 也存留言的 message_id）；被回覆的留言沒發上 Threads 的話這則也不發 Threads。留言每 15 分鐘檢查一次（`COMMENT_POLL_SECONDS`），同一輪內同一位成員連回同一則留言會合成一則推。
+- Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。成員回粉絲的留言整則不推（TG／Threads 都不發，只記 seen）；回其他成員照推。其他成員（非貼文主人）直接留言先等 `COMMENT_HOLD_MINUTES`（預設 60）分鐘：期間有成員回它就不單獨推（回覆那則會帶出這句），沒人回才推。被回覆的留言已經推過（例如超過等待時間才回、或回貼文主人的直接留言）→ 接成討論串：TG／Threads 掛在那則留言推播底下，只放回覆，不重複引用原句（`comment_heads` 表記合併推播的第一則，`tg_messages` 也存留言的 message_id）；被回覆的留言沒發上 Threads 的話這則也不發 Threads。留言每 15 分鐘檢查一次（`COMMENT_POLL_SECONDS`），同一輪內同一位成員連回同一則留言會合成一則推。community 設 `"comments": false` = 只推貼文、不抓留言。
 - Weverse 官方公告：`weverse_communities[].notices` 設 `true` 才抓。列表只有標題，沒看過的才打 detail 抓內文和照片；會員限定公告跳過。標題「{團名} 官方在 Weverse 發佈了公告！📢」。
 
 ### Threads 發文前審核
