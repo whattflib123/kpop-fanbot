@@ -55,16 +55,27 @@ def open_db() -> sqlite3.Connection:
 
 
 THREADS_MAX_ATTEMPTS = 5
+SEQ_RESERVE = 8  # Threads 留言編號「💬N\n」預留的字數
+
+
+def _comment_seq(db: sqlite3.Connection, root: str) -> int:
+    """這篇貼文底下下一則留言的編號（發成功才寫回 kv，失敗重試號碼不變、被略過不跳號）。"""
+    row = db.execute("SELECT v FROM kv WHERE k=?", (f"th_seq:{root}",)).fetchone()
+    return int(row[0]) + 1 if row else 1
 
 
 _PLATFORM = {"yt": "youtube", "wvp": "weverse", "wvn": "weverse", "ig": "instagram"}
 
 
 def enqueue_threads(db: sqlite3.Connection, uid: str, text: str, images: list[str] | None = None,
-                    reply_to_uid: str | None = None) -> None:
+                    reply_to_uid: str | None = None, root: str | None = None) -> None:
+    """root：成員留言所屬的 Weverse 貼文 uid，發 Threads 時依它編號（💬1、💬2…）。"""
     if not notify_threads.enabled():
         return
-    payload = json.dumps({"text": text, "images": images or []}, ensure_ascii=False)
+    payload = {"text": text, "images": images or []}
+    if root:
+        payload["root"] = root
+    payload = json.dumps(payload, ensure_ascii=False)
     db.execute("INSERT OR IGNORE INTO threads_queue VALUES (?,?,?,0,?)", (uid, payload, reply_to_uid, int(time.time())))
 
 
@@ -109,6 +120,9 @@ def flush_threads(db: sqlite3.Connection) -> None:
             if new_parts is not None:  # 續段換掉：先刪舊的，發成功再排新的
                 db.execute("DELETE FROM threads_queue WHERE uid LIKE ?", (f"{uid}#%",))
                 db.commit()
+        seq = _comment_seq(db, p["root"]) if p.get("root") else None
+        if seq:  # 成員留言依實際發出順序編號，方便在 Threads 上照順序讀（使用者 2026-11-11 決定）
+            p["text"] = f"💬{seq}\n{p['text']}"[: notify_threads.TEXT_LIMIT]
         try:
             media_id = notify_threads.publish(p["text"], p["images"], reply_media)
         except Exception as e:
@@ -124,6 +138,8 @@ def flush_threads(db: sqlite3.Connection) -> None:
         logging.info("Threads 已發 %s → %s", uid, media_id)
         db.execute("INSERT OR REPLACE INTO threads_posted VALUES (?,?)", (uid, media_id))
         db.execute("DELETE FROM threads_queue WHERE uid=?", (uid,))
+        if seq:
+            db.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (f"th_seq:{p['root']}", str(seq)))
         prev = uid
         for i, part in enumerate(new_parts or [], start=2):  # 改寫後的續段，下一輪接在回覆
             db.execute("INSERT OR IGNORE INTO threads_queue VALUES (?,?,?,0,?)", (f"{uid}#{i}", json.dumps(
@@ -297,8 +313,8 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         except Exception as e:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
-        th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT, quote=not threaded)
-        enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent)
+        th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT - SEQ_RESERVE, quote=not threaded)
+        enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent, root=p["uid"])
         for c, zh in zip(cs, zhs):
             db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (c["uid"], msg_id))
             db.execute("INSERT OR REPLACE INTO comment_heads VALUES (?,?)", (c["uid"], first["uid"]))
