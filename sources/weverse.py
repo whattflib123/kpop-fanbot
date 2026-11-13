@@ -148,3 +148,28 @@ def fetch_notices(cid: int, is_seen, limit: int = 10) -> list[dict]:
             item["photos"] = [p["url"] for p in photos if p.get("url")]
         out.append(item)
     return out
+
+
+def fetch_lives(cid: int, limit: int = 10) -> list[dict]:
+    """直播分頁（Live 分頁）：直播中 type=LIVE、結束後變回放 type=VOD。
+    其他狀態（例如預告）先跳過，等真的開播再推。回傳格式同 fetch_posts，多 kind="live"、live、thumbnail。"""
+    data = _get(f"/post/v1.0/community-{cid}/liveTabPosts", {"fieldSet": "postsV1", "limit": str(limit)})
+    out = []
+    for p in data.get("data", []):
+        video = (p.get("extension") or {}).get("video") or {}
+        if video.get("type") not in ("LIVE", "VOD"):
+            continue
+        title = (p.get("title") or p.get("plainBody") or "").strip()
+        out.append({
+            "uid": f"wvl:{p['postId']}",
+            "kind": "live",
+            "live": video["type"] == "LIVE",
+            "author": _name(p.get("author") or {}),
+            "title": title[:80],
+            "body": title,
+            "thumbnail": video.get("thumb"),
+            "url": p["shareUrl"].split("?")[0],
+            "published": datetime.fromtimestamp((video.get("onAirStartAt") or p["publishedAt"]) / 1000, timezone.utc).isoformat(),
+            "membership_only": bool(video.get("membershipOnly") or p.get("membershipOnly")),
+        })
+    return out

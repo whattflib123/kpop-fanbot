@@ -17,6 +17,7 @@ from pathlib import Path
 import notify_threads
 import ig_publish
 import review
+import live_archive
 from sources import instagram, weverse, youtube
 
 ROOT = Path(__file__).parent
@@ -49,6 +50,7 @@ def open_db() -> sqlite3.Connection:
     db.execute("CREATE TABLE IF NOT EXISTS comment_heads (uid TEXT PRIMARY KEY, head TEXT)")
     # 翻譯失敗次數；到上限就放棄那則（記 seen、不推）
     db.execute("CREATE TABLE IF NOT EXISTS translate_fail (uid TEXT PRIMARY KEY, attempts INTEGER)")
+    live_archive.init_db(db)
     ig_publish.init_db(db)  # IG Reels 排程發佈
     review.init_db(db)  # Threads 發文前審核
     return db
@@ -64,7 +66,7 @@ def _comment_seq(db: sqlite3.Connection, root: str) -> int:
     return int(row[0]) + 1 if row else 1
 
 
-_PLATFORM = {"yt": "youtube", "wvp": "weverse", "wvn": "weverse", "ig": "instagram"}
+_PLATFORM = {"yt": "youtube", "wvp": "weverse", "wvn": "weverse", "wvl": "weverse", "ig": "instagram"}
 
 
 def enqueue_threads(db: sqlite3.Connection, uid: str, text: str, images: list[str] | None = None,
@@ -324,7 +326,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
 
 
 def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
-    from notify import format_post, send_video, send_weverse_post, split_threads_post
+    from notify import format_post, send_live, send_video, send_weverse_post, split_threads_post
     from translate import TranslateError, translate
 
     config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
@@ -351,6 +353,10 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
             for c in artist.get("weverse_communities", [])
             if c.get("notices")
         ] + [
+            (f"wvl:{c['id']}", f"{c['label']} 直播", lambda c=c: weverse.fetch_lives(c["id"]))
+            for c in artist.get("weverse_communities", [])
+            if c.get("lives")
+        ] + [
             (f"ig:{a['username']}", a["label"], lambda a=a: instagram.fetch_posts(a))
             for a in artist.get("instagram_accounts", [])
             if ig_due
@@ -359,7 +365,8 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
         # Threads 要轉發哪些平台（youtube／weverse／instagram）；沒寫 = 全部。成員留言跟著 weverse
         th_sources = set(artist.get("threads_sources") or ["youtube", "weverse", "instagram"])
         for source, label, fetch in feeds:
-            threads_ok = _PLATFORM[source.split(":")[0]] in th_sources
+            # 直播通知只推 TG 頻道，不發 Threads／FB
+            threads_ok = _PLATFORM[source.split(":")[0]] in th_sources and not source.startswith("wvl:")
             try:
                 videos = fetch()
             except instagram.Throttled as e:
@@ -394,11 +401,14 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                 except TranslateError as e:
                     ALERT.fail(db, source, v, e)
                     continue
-                logging.info("新%s %s | %s → %s", "貼文" if is_post else "影片", label, v["title"], zh)
+                logging.info("新%s %s | %s → %s", "直播" if v.get("kind") == "live" else "貼文" if is_post else "影片", label, v["title"], zh)
                 if dry_run:
                     continue
                 try:
-                    if is_post:
+                    if v.get("kind") == "live":
+                        send_live(artist["name"], v, zh, artist.get("hashtags"))
+                        live_archive.enqueue(db, v)  # 回放出來後自動存檔（.env 有設 LIVE_ARCHIVE_DIR 才會）
+                    elif is_post:
                         msg_id = send_weverse_post(artist["name"], v, zh, artist.get("hashtags"), platform)
                         db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (v["uid"], msg_id))
                     else:
@@ -429,6 +439,8 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
 
             if source in communities:
                 check_comments(db, artist, communities[source], videos, dry_run)
+            if source.startswith("wvl:") and not dry_run:
+                live_archive.step(db, videos)
 
     if not dry_run:
         flush_threads(db)
