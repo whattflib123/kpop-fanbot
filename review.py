@@ -21,6 +21,7 @@ import os
 import sqlite3
 import time
 
+import bot_watchdog
 import notify
 import notify_threads
 
@@ -146,6 +147,7 @@ def wait(db: sqlite3.Connection, seconds: float) -> None:
         remain = deadline - time.time()
         if remain <= 0:
             return
+        bot_watchdog.kick()
         try:
             handle_updates(db, timeout=int(min(remain, 50)))
         except Exception as e:
