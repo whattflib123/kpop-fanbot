@@ -150,12 +150,20 @@ def fetch_notices(cid: int, is_seen, limit: int = 10) -> list[dict]:
     return out
 
 
-def fetch_lives(cid: int, limit: int = 10) -> list[dict]:
+def fetch_lives(cid: int, limit: int = 10, all_pages: bool = False) -> list[dict]:
     """直播分頁（Live 分頁）：直播中 type=LIVE、結束後變回放 type=VOD。
-    其他狀態（例如預告）先跳過，等真的開播再推。回傳格式同 fetch_posts，多 kind="live"、live、thumbnail。"""
-    data = _get(f"/post/v1.0/community-{cid}/liveTabPosts", {"fieldSet": "postsV1", "limit": str(limit)})
+    其他狀態（例如預告）先跳過，等真的開播再推。回傳格式同 fetch_posts，多 kind="live"、live、thumbnail。
+    all_pages=True 翻完全部（補存舊回放用）。"""
+    raw, params = [], {"fieldSet": "postsV1", "limit": str(limit)}
+    while True:
+        data = _get(f"/post/v1.0/community-{cid}/liveTabPosts", params)
+        raw += data.get("data", [])
+        after = ((data.get("paging") or {}).get("nextParams") or {}).get("after")
+        if not all_pages or not after:
+            break
+        params = {**params, "after": after}
     out = []
-    for p in data.get("data", []):
+    for p in raw:
         video = (p.get("extension") or {}).get("video") or {}
         if video.get("type") not in ("LIVE", "VOD"):
             continue
