@@ -168,3 +168,4 @@ python deploy.py --logs   # 只看 log
 - `.env` 不要在值後面寫行內註解（`KEY=   # 說明`）：docker `env_file` 會把 `# 說明` 當成值，空值的 token 會變成亂碼（例如 Threads 報 `Invalid OAuth access token`）。註解放上一行。
 - Weverse 用的是網頁版非公開 API，Weverse 改版可能會壞。
 - 第一次跑以前先確認 YouTube 頻道 ID 是官方的，同名頻道很多。
+- 卡住自動恢復：讀 TG 更新整個請求有硬上限（`notify._hard_limit`），主迴圈超過 `WATCHDOG_SEC`（預設 45 分鐘，0＝關）沒動就結束讓 Docker 重開（`bot_watchdog.py`）。2026-11-13 NAS 跟 Telegram 連線一直被重設、bot 卡住按鈕沒反應才加的。

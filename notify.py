@@ -4,6 +4,9 @@ import io
 import json
 import logging
 import os
+import signal
+import threading
+from contextlib import contextmanager
 
 import requests
 
@@ -97,12 +100,38 @@ def answer_callback(callback_id: str, text: str) -> None:
     _call("answerCallbackQuery", callback_query_id=callback_id, text=text)
 
 
+class HardTimeout(RuntimeError):
+    pass
+
+
+@contextmanager
+def _hard_limit(sec: int):
+    """整個請求的硬上限（SIGALRM，只在主執行緒有效）。
+    requests 的 timeout 是每次讀寫各算，2026-11-13 連線被重設後還是卡在讀 TG 更新好幾十分鐘，所以再加這層。
+    不繼承 OSError，免得被 urllib3 當成網路錯誤吞掉重試。"""
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def boom(*_):
+        raise HardTimeout(f"Telegram 請求超過 {sec} 秒沒回，放棄這次")
+
+    old = signal.signal(signal.SIGALRM, boom)
+    signal.alarm(sec)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 def get_updates(offset: int | None, timeout: int = 0) -> list[dict]:
     url = API.format(token=os.environ["TELEGRAM_BOT_TOKEN"], method="getUpdates")
     payload = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
     if offset is not None:
         payload["offset"] = offset
-    resp = requests.post(url, json=payload, timeout=timeout + 15)
+    with _hard_limit(timeout + 30):
+        resp = requests.post(url, json=payload, timeout=timeout + 15)
     data = resp.json()
     if not data.get("ok"):
         raise RuntimeError(f"Telegram getUpdates 失敗：{data.get('description')}")

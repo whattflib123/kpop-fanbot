@@ -17,6 +17,7 @@ from pathlib import Path
 import notify_threads
 import ig_publish
 import review
+import bot_watchdog
 import live_archive
 from sources import instagram, weverse, youtube
 
@@ -456,7 +457,10 @@ def main() -> None:
     load_env()
     db = open_db()
     interval = int(os.environ.get("POLL_SECONDS", "300"))
+    if not (args.once or args.dry_run):
+        bot_watchdog.start()  # 主迴圈卡住太久就結束，Docker 自動重開
     while True:
+        bot_watchdog.kick()
         run_once(db, args.dry_run)
         if args.once or args.dry_run:
             break
