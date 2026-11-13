@@ -23,7 +23,7 @@ import paramiko
 
 ROOT = Path(__file__).parent
 FILES = [
-    "main.py", "translate.py", "notify.py", "notify_threads.py", "review.py", "ig_publish.py",
+    "main.py", "live_archive.py", "translate.py", "notify.py", "notify_threads.py", "review.py", "ig_publish.py",
     "sources/__init__.py", "sources/youtube.py", "sources/weverse.py", "sources/instagram.py",
     "config.json", "glossary.json", "requirements.txt", "Dockerfile", "docker-compose.yml",
     ".dockerignore", ".env",

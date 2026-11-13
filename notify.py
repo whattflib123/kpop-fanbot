@@ -120,8 +120,9 @@ def format_post(artist: str, video: dict, zh_title: str | None, hashtags: list[s
     return "\n".join(lines)
 
 
-def send_video(artist: str, video: dict, zh_title: str | None, hashtags: list[str] | None = None) -> None:
-    text = html.escape(format_post(artist, video, zh_title, hashtags))
+def send_video(artist: str, video: dict, zh_title: str | None, hashtags: list[str] | None = None,
+               text: str | None = None) -> None:
+    text = html.escape(text or format_post(artist, video, zh_title, hashtags))
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
     if video.get("thumbnail"):
         try:
@@ -130,6 +131,25 @@ def send_video(artist: str, video: dict, zh_title: str | None, hashtags: list[st
         except RuntimeError:
             pass  # 縮圖失敗就改送純文字
     _call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+
+
+def format_live(artist: str, live: dict, zh_title: str | None, hashtags: list[str] | None = None) -> str:
+    """Weverse 直播通知（純文字）。只推開播一次；bot 第一次看到時已經結束（直播太短）就改推回放。"""
+    member = "（會員限定）" if live.get("membership_only") else ""
+    who = artist if live["author"] in ("", artist) else f"{artist} {live['author']}"
+    head = f"🔴 {who} 正在 Weverse 直播！{member}" if live.get("live") else f"📺 {who} 的 Weverse 直播已結束，可看回放{member}"
+    lines = [head]
+    if live["title"]:
+        lines.append(f"「{zh_title or live['title']}」")
+    lines.append(f"▶ {live['url']}")
+    if hashtags:
+        lines.append(" ".join(hashtags))
+    return "\n".join(lines)
+
+
+def send_live(artist: str, live: dict, zh_title: str | None, hashtags: list[str] | None = None) -> None:
+    """只推 TG 頻道（不發 Threads／FB、不審核）。"""
+    send_video(artist, live, zh_title, hashtags, text=format_live(artist, live, zh_title, hashtags))
 
 
 CAPTION_LIMIT = 1024

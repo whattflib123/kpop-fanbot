@@ -8,7 +8,7 @@
         {"id": "UCgD0APk2x9uBlLM0UsmhQjw", "label": "QWER 官方 YouTube (@QWER_Band_official)"}
       ],
       "weverse_communities": [
-        {"id": 164, "label": "QWER Weverse 成員貼文 (weverse.io/qwer)", "notices": true, "comments": true}
+        {"id": 164, "label": "QWER Weverse 成員貼文 (weverse.io/qwer)", "notices": true, "comments": true, "lives": true}
       ],
       "instagram_accounts": [
         {"username": "qwerband_official", "author": "官方", "label": "QWER IG 官方 (@qwerband_official)"},
