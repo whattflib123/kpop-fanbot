@@ -80,7 +80,7 @@ SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已�
 2. 改 `config.json`：
    - `name`：團名，會出現在推播開頭。
    - `hashtags`：推播最後的 hashtag，第一個也是 Threads 的主題標籤。
-   - `threads_sources`：Threads 要轉發哪些平台（`youtube`／`weverse`／`instagram`），沒寫 = 全部；其他平台只推 TG，不發 Threads。成員留言算 weverse。
+   - `threads_sources`：Threads 要轉發哪些平台（`youtube`／`weverse`／`instagram`），沒寫 = 全部；其他平台只推 TG，不發 Threads。成員留言算 weverse。會員限定貼文只推 TG（標「（會員限定）」），不發 Threads、不審核，底下成員留言也不發 Threads。
    - `youtube_channels[].id`：頻道 ID（`UC` 開頭）。打開頻道頁 → 檢視原始碼搜尋 `channelId`，或用 `https://www.youtube.com/@handle` 頁面的 `externalId`。小心同名的非官方頻道。
    - `weverse_communities[].id`：社群 ID，用網址路徑查：
      `python -c "from sources import weverse; print(weverse.community_id('qwer'))"`（`weverse.io/qwer` 的 `qwer`）。

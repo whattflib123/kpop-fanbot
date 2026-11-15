@@ -317,7 +317,8 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
         th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT - SEQ_RESERVE, quote=not threaded)
-        enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent, root=p["uid"])
+        if not p.get("membership_only"):  # 會員限定貼文沒發 Threads，底下留言也不發（不然會變成單獨一篇）
+            enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent, root=p["uid"])
         for c, zh in zip(cs, zhs):
             db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (c["uid"], msg_id))
             db.execute("INSERT OR REPLACE INTO comment_heads VALUES (?,?)", (c["uid"], first["uid"]))
@@ -420,6 +421,8 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                 th_tags = artist.get("hashtags", [])[:1]  # Threads 一篇只吃一個主題標籤，其餘只是文字
                 if not threads_ok:
                     pass  # 這個平台不發 Threads（config 的 threads_sources），只推 TG
+                elif v.get("membership_only"):
+                    logging.info("會員限定，不發 Threads：%s", v["uid"])  # 只推 TG，不排 Threads、不審核（使用者 2026-11-15 決定）
                 elif is_post:
                     # 超過 500 字不截斷：切成多段，第 2 段起接在前一段底下當回覆
                     parts = split_threads_post(artist["name"], v, zh, th_tags, platform, notify_threads.TEXT_LIMIT)
