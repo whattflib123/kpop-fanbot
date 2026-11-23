@@ -85,8 +85,10 @@ def init_db(db: sqlite3.Connection) -> None:
             db.execute(f"ALTER TABLE threads_review ADD COLUMN {col} TEXT")
 
 
-def ask(db: sqlite3.Connection, uid: str, text: str, n_parts: int, n_photos: int, limit: int) -> None:
-    """私訊預覽並記 asked。失敗就不記，flush 會視為不需審核直接發（寧可發也不要卡住）。"""
+def ask(db: sqlite3.Connection, uid: str, text: str, n_parts: int, n_photos: int, limit: int,
+        media: list[dict] | None = None) -> None:
+    """私訊預覽並記 asked。失敗就不記，flush 會視為不需審核直接發（寧可發也不要卡住）。
+    media：貼文的照片／影片（[{"type","media"}]），先傳給使用者看再接預覽；傳不了不擋審核。"""
     if not enabled():
         return
     notes = []
@@ -94,10 +96,13 @@ def ask(db: sqlite3.Connection, uid: str, text: str, n_parts: int, n_photos: int
         notes.append(f"分 {n_parts} 段，後段接在留言")
     if n_photos:
         notes.append(f"附 {n_photos} 張圖")
+    n_videos = sum(1 for m in media or [] if m["type"] == "video")
+    if n_videos:
+        notes.append(f"影片 {n_videos} 支只給你看，Threads 不附")
     room = limit - len(text) - len(SEPARATOR) - 4
     head = "📝 Threads 待審" + (f"（{'，'.join(notes)}）" if notes else "") + f"\n評論最多 {max(room, 0)} 字\n\n"
     try:
-        mid = notify.send_review(head + text, uid)
+        mid = notify.send_review(head + text, uid, media)
     except Exception as e:
         logging.warning("送審核預覽失敗 %s，改為直接發：%s", uid, e)
         return

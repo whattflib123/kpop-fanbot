@@ -44,9 +44,40 @@ def _review_kb(uid: str, flags: set[str] = frozenset()) -> dict:
     ]}
 
 
-def send_review(text: str, uid: str) -> int:
-    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=text[:MESSAGE_LIMIT],
-                 reply_markup=_review_kb(uid), disable_web_page_preview=True)["message_id"]
+def _send_review_media(chat_id: str, media: list[dict]) -> int | None:
+    """審核預覽先傳貼文的照片／影片（10 個一組），回傳第一則的 message_id。
+    整組傳不了就拿掉影片只傳照片；還是不行就放棄（不擋審核）。"""
+    first = None
+    for i in range(0, len(media), 10):
+        group = [dict(m) for m in media[i:i + 10]]
+        try:
+            sent = _send_media_group(chat_id, group)
+        except Exception as e:
+            logging.warning("審核預覽的媒體傳不了：%s", e)
+            photos = [dict(m) for m in media[i:i + 10] if m["type"] == "photo"]
+            if not photos or len(photos) == len(group):
+                continue
+            try:
+                sent = _send_media_group(chat_id, photos)
+            except Exception as e2:
+                logging.warning("審核預覽只傳照片也失敗：%s", e2)
+                continue
+        first = first or sent[0]["message_id"]
+    return first
+
+
+def send_review(text: str, uid: str, media: list[dict] | None = None) -> int:
+    """media：[{"type": "photo"|"video", "media": 網址}]，先傳相簿，預覽文字＋按鈕回覆在它下面（按鈕不能掛在相簿上）。"""
+    chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
+    extra = {}
+    if media:
+        album_id = _send_review_media(chat_id, media)
+        if album_id:
+            extra["reply_parameters"] = {"message_id": album_id, "allow_sending_without_reply": True}
+        else:
+            text = "⚠️ 照片／影片附不上，請到原貼文看\n" + text
+    return _call("sendMessage", chat_id=chat_id, text=text[:MESSAGE_LIMIT],
+                 reply_markup=_review_kb(uid), disable_web_page_preview=True, **extra)["message_id"]
 
 
 def set_review_keyboard(message_id: int, uid: str, flags: set[str]) -> None:

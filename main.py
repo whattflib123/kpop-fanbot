@@ -70,6 +70,22 @@ def _comment_seq(db: sqlite3.Connection, root: str) -> int:
 _PLATFORM = {"yt": "youtube", "wvp": "weverse", "wvn": "weverse", "wvl": "weverse", "ig": "instagram"}
 
 
+def review_media(post: dict) -> list[dict]:
+    """審核預覽要附的照片／影片（照原順序）。Weverse 影片這時才要播放網址（有期限）；要不到就用縮圖。"""
+    out = []
+    for m in post.get("media") or [{"type": "photo", "url": u} for u in post.get("photos") or []]:
+        if m.get("url"):
+            out.append({"type": m["type"], "media": m["url"]})
+        elif m.get("video_id"):
+            try:
+                out.append({"type": "video", "media": weverse.video_url(m["video_id"])})
+            except Exception as e:
+                logging.warning("拿不到 Weverse 影片 %s：%s", m["video_id"], e)
+                if m.get("thumb"):
+                    out.append({"type": "photo", "media": m["thumb"]})
+    return out
+
+
 def enqueue_threads(db: sqlite3.Connection, uid: str, text: str, images: list[str] | None = None,
                     reply_to_uid: str | None = None, root: str | None = None) -> None:
     """root：成員留言所屬的 Weverse 貼文 uid，發 Threads 時依它編號（💬1、💬2…）。"""
@@ -432,7 +448,8 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                         enqueue_threads(db, uid, part, v.get("photos") if i == 0 else None, reply_to_uid=prev)
                         prev = uid
                     if notify_threads.enabled():  # 發 Threads 前先私訊使用者審核（可加評論）
-                        review.ask(db, v["uid"], parts[0], len(parts), len(v.get("photos") or []), notify_threads.TEXT_LIMIT)
+                        review.ask(db, v["uid"], parts[0], len(parts), len(v.get("photos") or []), notify_threads.TEXT_LIMIT,
+                                   review_media(v) if review.enabled() else None)
                 else:
                     th_text = format_post(artist["name"], v, zh, th_tags)
                     enqueue_threads(db, v["uid"], th_text[: notify_threads.TEXT_LIMIT],

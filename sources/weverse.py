@@ -8,6 +8,7 @@ key 寫在 weverse.io 前端 JS 裡。改版換 key 時回 401 wam_401，這裡�
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import re
 import time
@@ -64,6 +65,31 @@ def community_id(url_path: str) -> int:
     return _get("/community/v1.0/communityIdUrlPathByUrlPathArtistCode/preview", {"keyword": url_path})["communityId"]
 
 
+def _media(atts: list[dict]) -> list[dict]:
+    """貼文附件照原順序：照片 {"type","url"}；影片 {"type","video_id","thumb"}（播放網址會過期，要用時再呼叫 video_url）。"""
+    out = []
+    for a in atts:
+        d = a.get("data") or {}
+        if a.get("type") == "photo" and d.get("url"):
+            out.append({"type": "photo", "url": d["url"]})
+        elif a.get("type") == "video" and d.get("videoId"):
+            out.append({"type": "video", "video_id": d["videoId"], "thumb": (d.get("uploadInfo") or {}).get("imageUrl")})
+    return out
+
+
+def video_url(video_id: str, max_bytes: int = 45 * 1024 * 1024) -> str:
+    """貼文影片的 mp4 網址（免登入，網址有期限）。挑不超過 max_bytes 裡畫質最高的；全部超過就給最小的。"""
+    info = _get(f"/cvideo/v1.0/cvideo-{video_id}/playInfo", {"videoId": video_id})["playInfo"]
+    if isinstance(info, str):
+        info = json.loads(info)
+    vids = [v for v in (info.get("videos") or {}).get("list", []) if v.get("source")]
+    if not vids:
+        raise RuntimeError(f"Weverse 影片 {video_id} 沒有可用的檔案")
+    vids.sort(key=lambda v: int(v.get("size") or 0))
+    fit = [v for v in vids if int(v.get("size") or 0) <= max_bytes]
+    return (fit[-1] if fit else vids[0])["source"]
+
+
 def fetch_posts(cid: int, limit: int = 20) -> list[dict]:
     data = _get(f"/post/v1.0/community-{cid}/artistTabPosts", {"fieldSet": "postsV1", "limit": str(limit), "pagingType": "CURSOR"})
     posts = []
@@ -78,6 +104,7 @@ def fetch_posts(cid: int, limit: int = 20) -> list[dict]:
             "title": (p.get("plainBody") or "").strip()[:80],  # 存 DB 用
             "photos": [a["data"]["url"] for a in atts if a.get("type") == "photo" and a.get("data", {}).get("url")],
             "has_video": any(a.get("type") == "video" for a in atts),
+            "media": _media(atts),  # 審核預覽用：照原順序的照片／影片
             "url": p["shareUrl"].split("?")[0],
             "published": datetime.fromtimestamp(p["publishedAt"] / 1000, timezone.utc).isoformat(),
             "membership_only": bool(p.get("membershipOnly") or p.get("locked")),
