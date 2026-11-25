@@ -1,13 +1,21 @@
-"""韓文／英文標題、貼文翻成繁體中文（Claude API）。"""
+"""韓文／英文標題、貼文翻成繁體中文。
+
+兩種後端（同一份 prompt 和詞彙表）：
+- cli：呼叫 Claude Code（`claude -p`），用訂閱額度，不花 API 費。設了 CLAUDE_CODE_OAUTH_TOKEN 就走這條。
+- api：Claude API（ANTHROPIC_API_KEY，按 token 計費）。cli 失敗且有設 key 時也會退回這條。
+TRANSLATE_BACKEND=cli／api 可以強制指定。
+"""
 import json
 import logging
 import os
 import re
+import subprocess
 from pathlib import Path
 
 import anthropic
 
 MODEL = "claude-sonnet-5-5"
+CLI_TIMEOUT = 180  # 秒；一則通常 2～5 秒
 GLOSSARY = json.loads((Path(__file__).parent / "glossary.json").read_text(encoding="utf-8"))
 
 _GLOSSARY_TEXT = "詞彙表（原文 → 譯名）：\n" + "\n".join(f"{k} → {v}" for k, v in GLOSSARY.items())
@@ -63,8 +71,6 @@ def translate(title: str, post: bool = False) -> str | None:
     譯文混進模型的自言自語就重翻一次，還是有就當失敗（下輪重試）。"""
     if not needs_translation(title):
         return None
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise TranslateError("未設定 ANTHROPIC_API_KEY")
     for _ in range(2):
         text = _translate_once(title, post)
         if not _leaked(title, text):
@@ -73,7 +79,54 @@ def translate(title: str, post: bool = False) -> str | None:
     raise TranslateError("譯文混進模型的自言自語（重翻仍然有）")
 
 
+def _backend() -> str:
+    return os.environ.get("TRANSLATE_BACKEND") or ("cli" if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") else "api")
+
+
 def _translate_once(title: str, post: bool) -> str:
+    if _backend() == "cli":
+        try:
+            return _translate_cli(title, post)
+        except TranslateError as e:
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                raise
+            logging.warning("Claude Code 翻譯失敗，這則改走 API（會計費）：%s", e)
+    return _translate_api(title, post)
+
+
+def _translate_cli(title: str, post: bool) -> str:
+    """claude -p：不給工具、不讀設定檔和 MCP、不存 session，只拿一段譯文。"""
+    cmd = [
+        "claude", "-p", "--model", MODEL, "--effort", "low",
+        "--system-prompt", SYSTEM_POST if post else SYSTEM,
+        "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+        "--disable-slash-commands", "--no-session-persistence", "--output-format", "json",
+    ]
+    # 環境裡有 ANTHROPIC_API_KEY 的話 CLI 會改用它計費，要拿掉才會走訂閱
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    try:
+        proc = subprocess.run(cmd, input=title, capture_output=True, text=True, timeout=CLI_TIMEOUT, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise TranslateError(f"claude 指令跑不起來或逾時：{e}") from e
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        raise TranslateError(f"claude 輸出不是 JSON（exit {proc.returncode}）：{(proc.stderr or proc.stdout)[:300]}") from None
+    if proc.returncode != 0 or data.get("is_error"):
+        raise TranslateError(f"claude 回報錯誤：{str(data.get('result'))[:300]}")
+    if data.get("stop_reason") == "refusal":
+        raise TranslateError("Claude 拒絕翻譯")
+    if data.get("stop_reason") == "max_tokens":
+        raise TranslateError("譯文被截斷（超過 max_tokens）")
+    text = (data.get("result") or "").strip()
+    if not text:
+        raise TranslateError("譯文是空的")
+    return text
+
+
+def _translate_api(title: str, post: bool) -> str:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise TranslateError("未設定 ANTHROPIC_API_KEY")
     try:
         resp = _get_client().beta.messages.create(
             model=MODEL,

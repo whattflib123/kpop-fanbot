@@ -108,6 +108,8 @@ cp .env.example .env
 
 ### 2. Claude API（必要）
 [console.anthropic.com](https://console.anthropic.com) 建 API key → `ANTHROPIC_API_KEY`，帳戶要有額度。
+
+有 Claude 訂閱、不想花 API 費：電腦跑 `claude setup-token`，把 token 填 `.env` 的 `CLAUDE_CODE_OAUTH_TOKEN`，翻譯改在容器裡呼叫 Claude Code（`claude -p`，映像內建 CLI），用訂閱額度。這條失敗且有設 `ANTHROPIC_API_KEY` 時那一則退回 API（會計費）；沒設 key 就算翻譯失敗、下輪重試。token 約一年到期。`TRANSLATE_BACKEND=cli／api` 可強制。
 模型 `claude-sonnet-5-5`（effort low）。估算：每則約 $0.001～0.01，一個團每月約 200 則 ≈ US$0.5～1.5。
 
 ### 3. Threads（選用）
