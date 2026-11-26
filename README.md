@@ -39,7 +39,7 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 - Weverse 直播通知：`weverse_communities[].lives` 設 `true`。只推 TG 頻道（不發 Threads、不審核），每場一次：開播「🔴 {團名} 成員 正在 Weverse 直播！」＋翻譯標題＋縮圖＋連結；bot 看到時已結束就推「📺 直播已結束，可看回放」。
 - 直播回放存檔（選用）：`.env` 設 `LIVE_ARCHIVE_DIR` 就在回放出來後用 yt-dlp 存影片＋韓／繁中字幕＋info.json（`live_archive.py`），存好私訊 admin。
 - 直播統整（選用，`live_summary.py`）：回放存好後用 Claude Code（`claude -p`，要 `CLAUDE_CODE_OAUTH_TOKEN`）讀韓文字幕，在同資料夾寫 `<同檔名>.summary.json`（整場統整、話題段落、爆點的前因／爆點／後續時間＋原話直翻）和 `.summary.md`；Dockerfile 裝 ffmpeg 量音量找聲音峰值。`LIVE_SUMMARY=0` 關。
-- 官方 YT 長片存檔（選用，`yt_archive.py`）：`config.json` 的 `youtube_channels` 標 `"archive": true`、`.env` 設 `YT_ARCHIVE_DIR`（docker-compose 要掛對應 volume）→ 新長片（Shorts、短於 `YT_ARCHIVE_MIN_SEC` 秒不做）存 1080p mp4＋韓文自動字幕 `.ko.srt`＋Claude Code 產 `.summary.json／.md`＋逐句直翻 `.zh_TW.srt` 外掛字幕，做完私訊 admin。首播／字幕還沒好隔 30 分鐘重試，48 小時放棄。
+- 官方 YT 長片存檔（選用，`yt_archive.py`）：`config.json` 的 `youtube_channels` 標 `"archive": true`、`.env` 設 `YT_ARCHIVE_DIR`（docker-compose 要掛對應 volume）→ 新長片（Shorts、短於 `YT_ARCHIVE_MIN_SEC` 秒不做）存 1080p mp4＋韓文自動字幕 `.ko.srt`＋Claude Code 產 `.summary.json／.md`＋逐句直翻 `.zh_TW.srt` 外掛字幕，做完私訊 admin 兩則（整場統整＋大綱、爆點列表，`picks_msg.py`；直播統整做完也一樣）。首播／字幕還沒好隔 30 分鐘重試，48 小時放棄。另可設 `TR_PREP_DIR`（docker-compose 掛 volume）開 /tr 預處理：`TR_PREP_DIR/inbox/<videoId>.txt` 放連結就照同流程做任何頻道的長片（目前只有 qwer-update 用）。
 - 統整的口味回饋（`taste.py`）：有 `data/scores/video_toolkit.csv`（剪輯自評分數）時，整理成題材偏好接在統整 prompt 後面；沒有就不加。
 
 ### Threads 發文前審核

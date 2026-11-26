@@ -4,7 +4,9 @@ config.json 的 youtube_channels 裡標 "archive": true 的頻道（qwer-update 
   1. 下載 1080p mp4＋韓文自動字幕（YouTube 語音辨識）＋info.json
   2. 用 Claude Code（`claude -p`，訂閱額度）讀韓文字幕產統整＋爆點（格式同 live_summary，見 README「官方 YT 存檔」）
   3. 把韓文字幕逐句直翻成繁中外掛字幕 srt（播放器跟 mp4 一起開就有中字）
-  4. TG 私訊 admin：中文片名＋統整＋前幾個爆點
+  4. TG 私訊 admin 兩則：整場統整＋大綱、爆點列表（picks_msg.py；使用者回編號挑）
+另外 /tr 預處理（TR_PREP_DIR，有設才開）：Mac music bot 的 /tr 連結經 `translate.py prep` 丟進 TR_PREP_DIR/inbox/，
+任何頻道的 YouTube 長片都照同樣流程做、存到 TR_PREP_DIR（見 scan_inbox）。
 只做 NAS 做得到的事：不 OCR 燒在畫面上的韓文字卡、不燒字幕、不上傳 YT（那些等 Mac 的 video_toolkit 開工時做）。
 
 存到 .env 的 YT_ARCHIVE_DIR（容器內路徑；NAS 上是 homes/yunyi_lee/media/qwer_youtube），每支同檔名
@@ -49,6 +51,51 @@ def init_db(db: sqlite3.Connection) -> None:
     # status：pending 待做（含等首播／等字幕）、done 好了、skipped 不存（太短、會員限定）、failed 放棄
     db.execute("CREATE TABLE IF NOT EXISTS yt_archive (uid TEXT PRIMARY KEY, title TEXT, name TEXT, status TEXT, "
                "attempts INTEGER DEFAULT 0, note TEXT, created INTEGER, updated INTEGER)")
+    cols = {r[1] for r in db.execute("PRAGMA table_info(yt_archive)")}
+    if "folder" not in cols:  # 2026-11-26：/tr 預處理存到 TR_PREP_DIR；NULL＝YT_ARCHIVE_DIR
+        db.execute("ALTER TABLE yt_archive ADD COLUMN folder TEXT")
+
+
+def tr_dir() -> Path | None:
+    d = os.environ.get("TR_PREP_DIR")
+    return Path(d) if d else None
+
+
+_VID = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})")
+
+
+def scan_inbox(db: sqlite3.Connection, send_admin) -> None:
+    """/tr 預處理：Mac 的 music bot 收到 /tr 連結 → `translate.py prep` 用 ssh 在 TR_PREP_DIR/inbox/ 放 <videoId>.txt
+    （第一行連結）。這裡收進佇列，做法同官方片（下載、統整、中文外掛字幕），存到 TR_PREP_DIR。
+    已經有統整的（官方片存檔過、或之前預處理過）直接私訊大綱＋爆點。"""
+    d = tr_dir()
+    inbox = d / "inbox" if d else None
+    if not inbox or not inbox.is_dir():
+        return
+    import live_summary
+    now = int(time.time())
+    for f in sorted(inbox.glob("*.txt")):
+        url = (f.read_text(encoding="utf-8", errors="replace").strip().splitlines() or [""])[0].split("\t")[0]
+        f.unlink(missing_ok=True)
+        m = _VID.search(url)
+        if not m:
+            _admin(send_admin, f"/tr 預處理：不是 YouTube 影片連結，跳過\n{url}")
+            continue
+        vid = m.group(1)
+        old = [p for base in (d, Path(os.environ["YT_ARCHIVE_DIR"])) for p in base.glob(f"*_{vid}.summary.json")]
+        if old:
+            logging.info("/tr 預處理：%s 已有統整，直接傳", vid)
+            live_summary.send_picks(old[0], [f"NAS media/{old[0].parent.name}/{old[0].name[:-13]}"])
+            continue
+        row = db.execute("SELECT status FROM yt_archive WHERE uid=?", (f"yt:{vid}",)).fetchone()
+        if row is None:
+            db.execute("INSERT INTO yt_archive (uid, title, status, created, updated, folder) VALUES (?,?,?,?,?,?)",
+                       (f"yt:{vid}", url, "pending", now, 0, str(d)))
+        elif row[0] != "pending":
+            db.execute("UPDATE yt_archive SET status='pending', attempts=0, created=?, updated=0, folder=? WHERE uid=?",
+                       (now, str(d), f"yt:{vid}"))
+        db.commit()
+        logging.info("/tr 預處理排進佇列 %s", vid)
 
 
 def enqueue(db: sqlite3.Connection, video: dict) -> None:
@@ -66,48 +113,57 @@ def step(db: sqlite3.Connection) -> None:
         return
     from notify import send_admin
 
-    folder = Path(os.environ["YT_ARCHIVE_DIR"])
+    import live_summary
+    default = Path(os.environ["YT_ARCHIVE_DIR"])
     now = int(time.time())
+    scan_inbox(db, send_admin)
     for uid, (proc, log) in list(_running.items()):
         if proc.poll() is None:
             continue
         del _running[uid]
         out = log.read_text(errors="replace") if log.exists() else ""
         log.unlink(missing_ok=True)
-        title, created = db.execute("SELECT title, created FROM yt_archive WHERE uid=?", (uid,)).fetchone()
+        title, created, fd = db.execute("SELECT title, created, folder FROM yt_archive WHERE uid=?", (uid,)).fetchone()
+        folder = Path(fd) if fd else default
         lines = out.strip().splitlines() or ["(沒有輸出)"]
         tail = lines[-1]
         if proc.returncode == 0:
             name = next((ln[5:].strip() for ln in reversed(lines) if ln.startswith("NAME ")), None)
             db.execute("UPDATE yt_archive SET status='done', name=?, note=NULL, updated=? WHERE uid=?", (name, now, uid))
-            logging.info("官方 YT 存檔＋統整完成 %s", name)
+            logging.info("YT 存檔＋統整完成 %s", name)
             if name:
-                _admin(send_admin, done_message(folder, name))
+                url = f"https://www.youtube.com/watch?v={uid[3:]}"
+                footer = [f"NAS media/{folder.name}/{name}（.mp4＋.zh_TW.srt 中文外掛字幕、.summary.md）", url]
+                if not live_summary.send_picks(folder / f"{name}.summary.json", footer):
+                    _admin(send_admin, done_message(folder, name))
         elif proc.returncode == EXIT_SKIP:
             db.execute("UPDATE yt_archive SET status='skipped', note=?, updated=? WHERE uid=?", (tail[:300], now, uid))
-            logging.info("官方 YT 不存 %s：%s", title, tail)
+            logging.info("YT 不存 %s：%s", title, tail)
+            if fd:
+                _admin(send_admin, f"/tr 預處理跳過：{title}\n{tail[:300]}")
         else:
             logging.warning("官方 YT 存檔沒完成 %s（%s）：%s", title, "稍後再試" if proc.returncode == EXIT_LATER else "失敗", tail)
             db.execute("UPDATE yt_archive SET note=?, updated=? WHERE uid=?", (tail[:300], now, uid))
             if now - created > RETRY_HOURS * 3600:
                 db.execute("UPDATE yt_archive SET status='failed', updated=? WHERE uid=?", (now, uid))
-                _admin(send_admin, f"⚠️ 官方 YT 存檔放棄（試了 {RETRY_HOURS} 小時）：{title}\n{tail[:300]}")
+                _admin(send_admin, f"⚠️ YT 存檔放棄（試了 {RETRY_HOURS} 小時）：{title}\n{tail[:300]}")
         db.commit()
 
     if _running:
         return
-    row = db.execute("SELECT uid, title, attempts FROM yt_archive WHERE status='pending' AND updated<=? "
+    row = db.execute("SELECT uid, title, attempts, folder FROM yt_archive WHERE status='pending' AND updated<=? "
                      "ORDER BY created", (now - RETRY_SEC,)).fetchone()
     if not row:
         return
-    uid, title, attempts = row
+    uid, title, attempts, fd = row
+    folder = Path(fd) if fd else default
     db.execute("UPDATE yt_archive SET attempts=?, updated=? WHERE uid=?", (attempts + 1, now, uid))
     db.commit()
     folder.mkdir(parents=True, exist_ok=True)
-    logging.info("開始官方 YT 存檔 %s", title)
+    logging.info("開始 YT 存檔 %s（%s）", title, folder.name)
     log = folder / f".{uid[3:]}.log"
     with log.open("w") as f:
-        proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "work", uid[3:]],
+        proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "work", uid[3:], str(folder)],
                                 stdout=f, stderr=subprocess.STDOUT, umask=0)
     _running[uid] = (proc, log)
 
@@ -260,7 +316,7 @@ def summary_prompt(n: int) -> str:
     glossary = json.loads((Path(__file__).parent / "glossary.json").read_text(encoding="utf-8"))
     names = "、".join(f"{k} → {v}" for k, v in glossary.items())
     return (
-        f"你是 K-pop 綜藝精華企劃，幫台灣的翻譯剪輯團隊（{ls.artist_name()} 粉絲頻道）整理 {ls.artist_name()} 官方 YouTube 頻道的影片（綜藝、幕後、vlog）。\n"
+        f"你是 K-pop 綜藝精華企劃，幫台灣的翻譯剪輯團隊（{ls.artist_name()} 粉絲頻道）整理 YouTube 影片（{ls.artist_name()} 官方頻道的綜藝、幕後、vlog，或成員出演的其他頻道節目）。\n"
         "輸入是整支影片的韓文自動字幕（YouTube 語音辨識），每行「時間 句子」，時間是影片中的時間點。\n"
         "全部用台灣繁體中文寫，語氣自然。\n\n"
         "要產出：\n"
@@ -383,7 +439,7 @@ def summarize(folder: Path, name: str, info: dict, cues: list[dict]) -> dict:
         body += "\n\n聲音峰值（+dB＝比前後 30 秒平常音量高出多少）：\n" + "\n".join(
             f"{p['start_ts']}–{p['end_ts']} +{p['db_over']}dB：{p['text'] or '無字幕'}" for p in peaks)
     data = _ask(summary_prompt(ls.n_highlights(duration)), header + "\n字幕：\n" + body, ls.SCHEMA)
-    cands = ls.scan_candidates(header, lines, peaks, "官方 YouTube 影片")
+    cands = ls.scan_candidates(header, lines, peaks, "YouTube 影片")
 
     def conv(part):
         if part is None:

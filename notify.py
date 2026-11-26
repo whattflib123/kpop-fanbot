@@ -30,6 +30,14 @@ def send_admin(text: str) -> None:
     _call("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True)
 
 
+def send_admin_html(text: str) -> None:
+    """同 send_admin，但 parse_mode=HTML（統整完的大綱＋爆點列表，picks_msg.py）。"""
+    chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
+    if not chat_id:
+        return
+    _call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 # ───── Threads 審核用（review.py）：私訊預覽＋按鈕、收回覆 ─────
 REVIEW_TOGGLES = (("nohead", "去標題"), ("conly", "只發評論"), ("nosep", "拿掉分隔線"))
 

@@ -79,6 +79,7 @@ def step(db: sqlite3.Connection) -> None:
         if proc.returncode == 0:
             db.execute("UPDATE live_summary SET status='done', updated=? WHERE uid=?", (now, uid))
             logging.info("直播統整完成 %s", name)
+            send_picks(folder / f"{name}.summary.json", [f"NAS media/weverse_live/{name}"])
         else:
             tail = (out.strip().splitlines() or ["(沒有輸出)"])[-1]
             logging.warning("直播統整失敗 %s（第 %d 次）：%s", name, attempts, tail)
@@ -104,6 +105,20 @@ def step(db: sqlite3.Connection) -> None:
         proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run", name],
                                 stdout=f, stderr=subprocess.STDOUT, umask=0)
     _running[uid] = (proc, log)
+
+
+def send_picks(path: Path, footer: list[str]) -> bool:
+    """統整完私訊兩則：整場統整＋大綱、爆點列表（使用者回編號挑；2026-11-26 起不用回 Mac 跑 picks）。"""
+    import picks_msg
+    from notify import send_admin_html
+    try:
+        s = json.loads(path.read_text(encoding="utf-8"))
+        for text in picks_msg.messages(s, footer=footer):
+            send_admin_html(text)
+        return True
+    except Exception as e:
+        logging.warning("大綱＋爆點列表沒送出 %s：%s", path.name, e)
+        return False
 
 
 # ───── 產統整（子行程裡跑） ─────
