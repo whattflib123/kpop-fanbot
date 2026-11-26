@@ -247,8 +247,8 @@ def audio_peaks(mp4: Path, lines: list[tuple[int, str]]) -> tuple[list[dict], in
 
 
 def n_highlights(duration: float) -> int:
-    """依長度 3～8 個（使用者 2026-11-26 定）。"""
-    return max(3, min(8, round(duration / 60 / 12)))
+    """每 6 分鐘 1 個、3～12 個（使用者 2026-11-26 回測後改；原本每 12 分鐘 1 個、3～8 個，25 分鐘直播只給 3 個會漏掉做過的段）。"""
+    return max(3, min(12, round(duration / 60 / 6)))
 
 
 _TS = {"type": "string", "pattern": r"^(\d+:)?\d{1,2}:\d{2}$"}
