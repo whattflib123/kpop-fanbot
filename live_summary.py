@@ -25,7 +25,7 @@ import taste
 MODEL = "claude-opus-5-5"
 CLI_TIMEOUT = 1200  # 秒；1.5 小時直播實測約 1～3 分鐘
 MAX_ATTEMPTS = 3
-VERSION = 3  # 2：加 audio_peaks、mp4_offset_sec、highlights[].source；3：加 candidates（分段列全部候選，2026-11-26）
+VERSION = 4  # 2：加 audio_peaks、mp4_offset_sec、highlights[].source；3：加 candidates（分段列全部候選）；4：4～5 星候選加 related（2026-11-26）
 CHUNK_SEC = 600  # 候選分段掃描：每段幾秒
 CHUNK_PAD = 60   # 每段前後多給幾秒上下文
 CHUNK_WORKERS = 3
@@ -511,8 +511,45 @@ def scan_candidates(header: str, lines: list[tuple[int, str]], peaks: list[dict]
             merged[merged.index(dup)] = c
     for i, c in enumerate(merged, 1):
         c["id"] = i
+    group_candidates(merged)
     print(f"候選 {len(merged)} 個（{len(starts)} 段）")
     return merged
+
+
+GROUP_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["groups"],
+    "properties": {"groups": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["top", "related"],
+        "properties": {"top": {"type": "integer"}, "related": {"type": "array", "items": {"type": "integer"}}}}}},
+}
+
+
+def group_candidates(cands: list[dict]) -> None:
+    """4～5 星候選加 related：1～3 星裡跟它同一件事的（前因／後續／同一個梗），每個低星只掛一個。就地改；失敗就不掛。"""
+    tops = {c["id"] for c in cands if c["score"] >= 4}
+    if not tops or len(tops) == len(cands):
+        return
+    text = "\n".join(f"{c['id']}\t{c['start_ts']}–{c['end_ts']}\t★{c['score']}\t{c['title']}｜{c['why'][:100]}" for c in cands)
+    system = ("輸入是一支影片的爆點候選（id、時間、星數、標題｜原因）。對每個 4～5 星的候選，找出 1～3 星裡跟它是同一件事的："
+              "它的前因（鋪陳、怎麼聊到的）、後續（反應、收尾）、或同一個梗的延伸。只掛真的有關的，時間相近但話題不同的不要掛；"
+              "每個低星最多掛在一個 4～5 星底下（掛最相關的）。沒有就給空陣列。")
+    try:
+        groups = ask(system, text, GROUP_SCHEMA)["groups"]
+    except SystemExit as e:
+        print(f"候選分組失敗，不掛：{e}")
+        return
+    low = {c["id"] for c in cands if c["score"] < 4}
+    taken: set[int] = set()
+    rel = {}
+    for g in groups:
+        if g["top"] in tops:
+            ids = [i for i in g["related"] if i in low and i not in taken]
+            taken.update(ids)
+            rel[g["top"]] = ids
+    for c in cands:
+        if c["score"] >= 4:
+            c["related"] = rel.get(c["id"], [])
+    print(f"候選分組：{len(taken)} 個低星掛到 4～5 星底下")
 
 
 def candidates_markdown(cands: list[dict]) -> list[str]:
