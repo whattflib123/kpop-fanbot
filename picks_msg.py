@@ -26,7 +26,11 @@ def _head(s: dict) -> tuple[str, str]:
     ts, off = _ts_fn(s)
     v = s.get("live") or s.get("video") or {}
     who = f"{v.get('member')} 直播" if s.get("live") else (s.get("source_label") or v.get("channel") or "官方 YT")
-    return f"{v.get('date', '')} {who}〈{v.get('title_ko', '')}〉（{ts(v.get('duration_sec', 0) + off)}）", v.get("title_zh", "")
+    return f"{v.get('date', '')} {who}〈{v.get('title_ko', '')}〉（{ts(v.get('duration_sec', 0) + off)}）".strip(), v.get("title_zh", "")
+
+
+def _tlabel(s: dict) -> str:
+    return "審片版時間" if s.get("kind") == "review" else "回放影片時間"
 
 
 def outline_html(s: dict, footer: list[str] | None = None) -> str:
@@ -34,11 +38,11 @@ def outline_html(s: dict, footer: list[str] | None = None) -> str:
     e = html.escape
     ts, _ = _ts_fn(s)
     head, zh = _head(s)
-    sents = [x for x in re.split(r"(?<=[。！？])", s.get("summary", "")) if x.strip()]
+    sents = [x for x in re.split(r"(?<=[。！？])(?![」』）”\"])", s.get("summary", "")) if x.strip()]
     L = [f"<b>{e(head)}</b>", f"<i>{e(zh)}</i>", "", SEP, "", "<b>整場統整</b>", ""]
     for x in sents:
         L += [e(x.strip()), ""]
-    L += [SEP, "", f"<b>大綱（{len(s.get('segments', []))} 段，時間＝回放影片時間）</b>", ""]
+    L += [SEP, "", f"<b>大綱（{len(s.get('segments', []))} 段，時間＝{_tlabel(s)}）</b>", ""]
     for g in s.get("segments", []):
         L += [f"<code>{ts(g['start'])}</code>　{e(g['topic'])}", ""]
     if footer:
@@ -68,7 +72,7 @@ def picks_html(s: dict, top_n: int = 10) -> str | None:
     for x in others:
         n += 1; num[x["id"]] = n
     head, zh = _head(s)
-    L = [f"<b>{e(head)}</b>", f"<i>{e(zh)}</i>", "<i>時間＝回放影片時間，點時間可複製</i>", "",
+    L = [f"<b>{e(head)}</b>", f"<i>{e(zh)}</i>", f"<i>時間＝{_tlabel(s)}，點時間可複製</i>", "",
          f"<b>★ 4～5 星（{len(top)} 個）</b>", "", SEP, ""]
     for t in top:
         L += [f"<b>{num[t['id']]}. {e(t['title'])}</b>",
