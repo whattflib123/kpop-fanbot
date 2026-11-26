@@ -287,8 +287,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
                 logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
             continue
         rt = c["reply_to"]
-        # 成員回粉絲留言 → 整則不推（TG／Threads 都不發），只記 seen；回其他成員照推（使用者 2026-11-06 決定）
-        skip = "成員回粉絲" if rt and not rt.get("author") else None
+        skip = None
         if not rt and c["author"] != p.get("author"):
             # 其他成員直接留言：先等 COMMENT_HOLD_MINUTES，期間有成員回它就不單獨推（回覆那則會帶出這句），沒人回才推
             if any((x["reply_to"] or {}).get("id") and f"wvc:{x['reply_to']['id']}" == c["uid"] for _, x in comments):
@@ -337,7 +336,9 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
             logging.warning("留言推播失敗，下輪重試：%s", e)
             continue
         th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT - SEQ_RESERVE, quote=not threaded)
-        if not p.get("membership_only"):  # 會員限定貼文沒發 Threads，底下留言也不發（不然會變成單獨一篇）
+        # 成員回粉絲留言 → 只推 TG、不發 Threads（使用者 2026-11-26 決定；之前 11-06 起是整則不推）
+        to_fan = bool(first.get("reply_to") and not first["reply_to"].get("author"))
+        if not p.get("membership_only") and not to_fan:  # 會員限定貼文沒發 Threads，底下留言也不發（不然會變成單獨一篇）
             enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent, root=p["uid"])
         for c, zh in zip(cs, zhs):
             db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (c["uid"], msg_id))
