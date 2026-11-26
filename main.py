@@ -19,6 +19,8 @@ import ig_publish
 import review
 import bot_watchdog
 import live_archive
+import live_summary
+import yt_archive
 from sources import instagram, weverse, youtube
 
 ROOT = Path(__file__).parent
@@ -52,6 +54,8 @@ def open_db() -> sqlite3.Connection:
     # 翻譯失敗次數；到上限就放棄那則（記 seen、不推）
     db.execute("CREATE TABLE IF NOT EXISTS translate_fail (uid TEXT PRIMARY KEY, attempts INTEGER)")
     live_archive.init_db(db)
+    live_summary.init_db(db)
+    yt_archive.init_db(db)
     ig_publish.init_db(db)  # IG Reels 排程發佈
     review.init_db(db)  # Threads 發文前審核
     return db
@@ -380,6 +384,7 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
             if ig_due
         ]
         communities = {f"wvp:{c['id']}": c for c in artist.get("weverse_communities", [])}
+        archive_yt = {f"yt:{ch['id']}" for ch in artist.get("youtube_channels", []) if ch.get("archive")}
         # Threads 要轉發哪些平台（youtube／weverse／instagram）；沒寫 = 全部。成員留言跟著 weverse
         th_sources = set(artist.get("threads_sources") or ["youtube", "weverse", "instagram"])
         for source, label, fetch in feeds:
@@ -431,6 +436,8 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                         db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (v["uid"], msg_id))
                     else:
                         send_video(artist["name"], v, zh, artist.get("hashtags"))
+                        if source in archive_yt:
+                            yt_archive.enqueue(db, v)  # 長片自動存檔＋統整＋中文外掛字幕（Shorts 跳過）
                 except Exception as e:
                     logging.warning("推播失敗，下輪重試：%s", e)
                     continue
@@ -462,6 +469,9 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                 check_comments(db, artist, communities[source], videos, dry_run)
             if source.startswith("wvl:") and not dry_run:
                 live_archive.step(db, videos)
+                live_summary.step(db)  # 存好的直播用 Claude Code 產統整＋爆點
+            if source in archive_yt and not dry_run:
+                yt_archive.step(db)  # 官方 YT 長片：下載、統整、中文外掛字幕（背景一次一支）
 
     if not dry_run:
         flush_threads(db)

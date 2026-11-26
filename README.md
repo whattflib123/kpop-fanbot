@@ -38,6 +38,9 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 - Weverse 官方公告：`weverse_communities[].notices` 設 `true` 才抓。列表只有標題，沒看過的才打 detail 抓內文和照片；會員限定公告跳過。標題「{團名} 官方在 Weverse 發佈了公告！📢」。
 - Weverse 直播通知：`weverse_communities[].lives` 設 `true`。只推 TG 頻道（不發 Threads、不審核），每場一次：開播「🔴 {團名} 成員 正在 Weverse 直播！」＋翻譯標題＋縮圖＋連結；bot 看到時已結束就推「📺 直播已結束，可看回放」。
 - 直播回放存檔（選用）：`.env` 設 `LIVE_ARCHIVE_DIR` 就在回放出來後用 yt-dlp 存影片＋韓／繁中字幕＋info.json（`live_archive.py`），存好私訊 admin。
+- 直播統整（選用，`live_summary.py`）：回放存好後用 Claude Code（`claude -p`，要 `CLAUDE_CODE_OAUTH_TOKEN`）讀韓文字幕，在同資料夾寫 `<同檔名>.summary.json`（整場統整、話題段落、爆點的前因／爆點／後續時間＋原話直翻）和 `.summary.md`；Dockerfile 裝 ffmpeg 量音量找聲音峰值。`LIVE_SUMMARY=0` 關。
+- 官方 YT 長片存檔（選用，`yt_archive.py`）：`config.json` 的 `youtube_channels` 標 `"archive": true`、`.env` 設 `YT_ARCHIVE_DIR`（docker-compose 要掛對應 volume）→ 新長片（Shorts、短於 `YT_ARCHIVE_MIN_SEC` 秒不做）存 1080p mp4＋韓文自動字幕 `.ko.srt`＋Claude Code 產 `.summary.json／.md`＋逐句直翻 `.zh_TW.srt` 外掛字幕，做完私訊 admin。首播／字幕還沒好隔 30 分鐘重試，48 小時放棄。
+- 統整的口味回饋（`taste.py`）：有 `data/scores/video_toolkit.csv`（剪輯自評分數）時，整理成題材偏好接在統整 prompt 後面；沒有就不加。
 
 ### Threads 發文前審核
 每篇貼文（不含留言回覆、續段）翻好後先私訊 `TELEGRAM_ADMIN_CHAT_ID` 預覽＋按鈕「✅ 發佈／✍️ 加評論／⏭ 略過」。預覽前先傳這篇的照片和影片（照原順序，10 個一組，預覽文字回覆在相簿下面；Weverse 影片用免登入的 `cvideo/playInfo` 拿 mp4，挑 45MB 內畫質最高的；影片只給審核看，Threads 仍只附圖；影片傳不了就只傳照片，都傳不了照樣送審並標「附不上」）。加評論 = 回覆 bot 的提示訊息，評論放在貼文最前面、接「——— 以下為翻譯 ———」分隔線再譯文（上限 = 500 − 本文 − 分隔線）；略過 = 這篇和它的續段、底下成員留言都不發 Threads；另有「✏️ 改寫全文」（bot 傳整篇草稿、點一下複製，回覆改好的全文就照你的版本發，超過 500 字自動切段接回覆）和快速切換「去標題／只發評論／拿掉分隔線」（可多選，按了打勾；只發評論 = 不附譯文和續段，要再按加評論）。`THREADS_REVIEW_HOURS`（預設 24）小時沒回自動發。`THREADS_REVIEW=0` 關閉。TG 頻道不受影響，照舊自動推。

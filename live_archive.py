@@ -80,6 +80,8 @@ def step(db: sqlite3.Connection, lives: list[dict]) -> None:
             db.execute("UPDATE live_archive SET status='done', updated=? WHERE uid=?", (now, uid))
             logging.info("直播存檔完成 %s（%.0f 秒）", row[0], time.time() - started)
             _admin(send_admin, f"📼 Weverse 直播回放已存檔：{row[0]}")
+            import live_summary
+            live_summary.enqueue(db, uid, row[0])  # 接著產直播統整
         else:
             tail = out.strip().splitlines()[-1:] or ["(沒有輸出)"]
             logging.warning("直播存檔失敗 %s：%s", uid, tail[0])
