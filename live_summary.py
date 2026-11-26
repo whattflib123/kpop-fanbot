@@ -25,7 +25,10 @@ import taste
 MODEL = "claude-opus-5-5"
 CLI_TIMEOUT = 1200  # 秒；1.5 小時直播實測約 1～3 分鐘
 MAX_ATTEMPTS = 3
-VERSION = 2  # 2：加 audio_peaks、mp4_offset_sec、highlights[].source（2026-11-26）
+VERSION = 3  # 2：加 audio_peaks、mp4_offset_sec、highlights[].source；3：加 candidates（分段列全部候選，2026-11-26）
+CHUNK_SEC = 600  # 候選分段掃描：每段幾秒
+CHUNK_PAD = 60   # 每段前後多給幾秒上下文
+CHUNK_WORKERS = 3
 # 峰值基準＝前後 PEAK_WINDOW 秒的第 80 百分位（≈ 平常講話音量）。用中位數不行：0.5 秒一格時中位數落在句子間的
 # 靜音，每句話都會高出 20 dB 以上（2026-11-26 用 11-22 Magenta 直播實測）
 PEAK_DB = 6.0
@@ -358,6 +361,7 @@ def build(name: str, folder: Path) -> dict:
         body += "\n\n聲音峰值（時間跟字幕同一條時間軸；+dB＝比前後 30 秒平常講話音量高出多少）：\n" + "\n".join(
             f"{p['start_ts']}–{p['end_ts']} +{p['db_over']}dB：{p['text'] or '無字幕'}" for p in peaks)
     data = ask(system_prompt(n), header + body)
+    cands = scan_candidates(header.rsplit("\n\n字幕：", 1)[0], lines, peaks, "Weverse 直播")
 
     def conv(part):
         if part is None:
@@ -395,17 +399,18 @@ def build(name: str, folder: Path) -> dict:
         "segments": [{"start": _sec(s["start"]), "end": _sec(s["end"]), "start_ts": s["start"], "end_ts": s["end"],
                       "topic": s["topic"]} for s in data["segments"]],
         "highlights": highlights,
+        "candidates": cands,
         "audio_peaks": peaks,
     }
 
 
-def ask(system: str, text: str) -> dict:
+def ask(system: str, text: str, schema: dict | None = None) -> dict:
     """claude -p＋--json-schema：不給工具、不讀設定檔和 MCP、不存 session。走訂閱（拿掉 ANTHROPIC_API_KEY）。"""
     cmd = [
         "claude", "-p", "--model", MODEL, "--system-prompt", system,
         "--tools", "", "--strict-mcp-config", "--setting-sources", "",
         "--disable-slash-commands", "--no-session-persistence",
-        "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
+        "--output-format", "json", "--json-schema", json.dumps(schema or SCHEMA),
     ]
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     proc = subprocess.run(cmd, input=text, capture_output=True, text=True, timeout=CLI_TIMEOUT, env=env)
@@ -422,13 +427,110 @@ def ask(system: str, text: str) -> dict:
     return out
 
 
+CAND_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["candidates"],
+    "properties": {"candidates": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["start", "end", "payoff", "title", "score", "why", "quotes", "fit", "source"],
+        "properties": {
+            "start": _TS, "end": _TS, "payoff": _TS,
+            "title": {"type": "string"},
+            "score": {"type": "integer", "minimum": 1, "maximum": 5},
+            "why": {"type": "string"},
+            "quotes": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False, "required": ["t", "ko", "zh"],
+                "properties": {"t": _TS, "ko": {"type": "string"}, "zh": {"type": "string"}}}},
+            "fit": {"type": "string", "enum": ["short", "long"]},
+            "source": {"type": "string", "enum": ["sub", "audio", "both"]},
+        }}}},
+}
+
+
+def candidates_prompt(kind: str) -> str:
+    glossary = json.loads((Path(__file__).parent / "glossary.json").read_text(encoding="utf-8"))
+    names = "、".join(f"{k} → {v}" for k, v in glossary.items())
+    return (
+        f"你是 K-pop 精華企劃，幫台灣的翻譯剪輯團隊（{artist_name()} 粉絲頻道）從{kind}裡找可以剪成中字精華的片段。\n"
+        "輸入是其中一段的韓文字幕（每行「時間 句子」），可能附這段的聲音峰值。標「前文」「後文」的只是上下文。\n"
+        "任務：把『這段』裡所有可能剪得出來的時刻全部列出來（candidates）——好笑、可愛、反轉、吐槽、爆料、反應大、成員互動、"
+        "台灣相關、感人、重要消息都算。**寧可多列、不能漏**：使用者會自己篩，漏掉比多列嚴重。每 10 分鐘通常有 5～15 個，"
+        "真的平淡可以少，但不要只挑最好的幾個。\n"
+        "每個候選：start／end＝前因開頭到後續結束（觀眾只看這段也看得懂），payoff＝爆點那句的時間；title 一句話；"
+        "score 1～5（5＝一定要剪、1＝勉強可用，低分的也要列）；why 一句說為什麼可以剪（字幕可能聽錯、聲音峰值要看畫面確認的照實寫）；"
+        "quotes 1～3 句關鍵原話（ko 照字幕原文、zh 照字直翻台灣口語）；fit：60 秒內講得完＝short，否則 long；"
+        "source：靠字幕＝sub、靠聲音峰值＝audio、兩者＝both。\n"
+        "規則：時間一律用輸入裡真的有的時間點；只用字幕內容，不用背景知識補劇情；看不到畫面，純畫面笑點不要猜，"
+        "但字幕平淡、聲音很大的地方要列（why 註明要看畫面）。音樂、音效造成的峰值不列。台灣繁體中文。\n"
+        f"- 名字照詞彙表：{names}。{name_hint()}\n"
+        + taste.prompt_block().replace("挑 highlights 和給 score 時參考，但素材本身好笑還是要挑",
+                                       "**只影響 score 高低，不影響要不要列**：不合口味的也照列、給低分")
+    )
+
+
+def scan_candidates(header: str, lines: list[tuple[int, str]], peaks: list[dict], kind: str) -> list[dict]:
+    """每 CHUNK_SEC 秒一段（前後多給 CHUNK_PAD 秒上下文）各自列全部候選，合併去重、照時間排。"""
+    from concurrent.futures import ThreadPoolExecutor
+    if not lines:
+        return []
+    end = lines[-1][0] + 1
+    system = candidates_prompt(kind)
+
+    def one(a: int) -> list[dict]:
+        b = a + CHUNK_SEC
+        ctx = [f"{'前文 ' if t < a else '後文 ' if t >= b else ''}{_ts(t)} {s}" for t, s in lines
+               if a - CHUNK_PAD <= t < b + CHUNK_PAD]
+        if not any(a <= t < b for t, _ in lines):
+            return []
+        body = header + f"\n這段：{_ts(a)}～{_ts(min(b, end))}\n\n字幕：\n" + "\n".join(ctx)
+        pk = [p for p in peaks if a <= p["start"] < b]
+        if pk:
+            body += "\n\n聲音峰值（+dB＝比前後 30 秒平常音量高出多少）：\n" + "\n".join(
+                f"{p['start_ts']}–{p['end_ts']} +{p['db_over']}dB：{p['text'] or '無字幕'}" for p in pk)
+        out = []
+        for c in ask(system, body, CAND_SCHEMA)["candidates"]:
+            st, en, po = _sec(c["start"]), _sec(c["end"]), _sec(c["payoff"])
+            if not a <= po < b:
+                continue  # 爆點在上下文裡的交給隔壁段
+            out.append({"start": min(st, po), "end": max(en, po), "payoff": po, "start_ts": _ts(min(st, po)),
+                        "end_ts": _ts(max(en, po)), "payoff_ts": c["payoff"], "title": c["title"], "score": c["score"],
+                        "why": c["why"], "fit": c["fit"], "source": c["source"],
+                        "quotes": [{"t": _sec(q["t"]), "t_ts": q["t"], "ko": q["ko"], "zh": q["zh"]} for q in c["quotes"]]})
+        return out
+
+    starts = list(range(0, end, CHUNK_SEC))
+    with ThreadPoolExecutor(CHUNK_WORKERS) as ex:
+        found = [c for part in ex.map(one, starts) for c in part]
+    found.sort(key=lambda c: c["start"])
+    merged: list[dict] = []
+    for c in found:  # 重疊超過一半當同一段，留分數高的
+        dup = next((m for m in merged if min(m["end"], c["end"]) - max(m["start"], c["start"])
+                    > 0.5 * min(m["end"] - m["start"] or 1, c["end"] - c["start"] or 1)), None)
+        if dup is None:
+            merged.append(c)
+        elif c["score"] > dup["score"]:
+            merged[merged.index(dup)] = c
+    for i, c in enumerate(merged, 1):
+        c["id"] = i
+    print(f"候選 {len(merged)} 個（{len(starts)} 段）")
+    return merged
+
+
+def candidates_markdown(cands: list[dict]) -> list[str]:
+    out = ["", f"## 全部候選（照時間，{len(cands)} 個；星數＝建議度，低星也列出來給你篩）", ""]
+    for c in cands:
+        out.append(f"- `{c['start_ts']}–{c['end_ts']}` {'★' * c['score']} **{c['title']}**"
+                   f"（{'Shorts' if c['fit'] == 'short' else '長片'}）— {c['why']}")
+        out += [f"  - `{q['t_ts']}` {q['ko']} → {q['zh']}" for q in c["quotes"]]
+    return out
+
+
 def to_markdown(s: dict) -> str:
     lv = s["live"]
     out = [f"# {lv['date']} {lv['member']} 直播：{lv['title_zh']}", "",
            f"- 原標題：{lv['title_ko']}", f"- 長度：{_ts(lv['duration_sec'])}", f"- 連結：{lv['url']}",
            f"- 時間照原直播算，回放檔通常早 2～3 分鐘", "", "## 統整", "", s["summary"], "", "## 段落", ""]
     out += [f"- `{x['start_ts']}–{x['end_ts']}` {x['topic']}" for x in s["segments"]]
-    out += ["", "## 爆點", ""]
+    out += ["", "## 精選爆點", ""]
     for h in s["highlights"]:
         out += [f"### {h['id']}. {h['title']}（{'★' * h['score']}，{'Shorts' if h['fit'] == 'short' else '長片'}）",
                 f"`{_ts(h['start'])}–{_ts(h['end'])}`", ""]
@@ -441,7 +543,7 @@ def to_markdown(s: dict) -> str:
             out.append(f"- **提到**：{'、'.join(h['members_mentioned'])}")
         out += [f"  - `{q['t_ts']}` {q['ko']} → {q['zh']}" for q in h["quotes"]]
         out.append("")
-    return "\n".join(out)
+    return "\n".join(out + candidates_markdown(s.get("candidates", [])))
 
 
 def _write(path: Path, text: str) -> None:

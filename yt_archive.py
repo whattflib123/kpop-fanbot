@@ -126,7 +126,7 @@ def done_message(folder: Path, name: str) -> str:
         return f"📼 官方 YT 已存檔：{name}"
     v = s["video"]
     out = [f"📼 官方 YT 已存檔＋統整：{v['title_zh']}", f"（{v['title_ko']}，{_ts(v['duration_sec'])}）", "",
-           s["summary"], "", "爆點："]
+           s["summary"], "", f"精選爆點（全部候選 {len(s.get('candidates', []))} 個在 .summary.md）："]
     for h in s["highlights"][:5]:
         out.append(f"{h['id']}. {_ts(h['start'])}–{_ts(h['end'])} {h['title']}（{'★' * h['score']}）")
     out += ["", f"NAS media/qwer_youtube/{name}（.mp4＋.zh_TW.srt 中文外掛字幕、.summary.md）", v["url"]]
@@ -383,6 +383,7 @@ def summarize(folder: Path, name: str, info: dict, cues: list[dict]) -> dict:
         body += "\n\n聲音峰值（+dB＝比前後 30 秒平常音量高出多少）：\n" + "\n".join(
             f"{p['start_ts']}–{p['end_ts']} +{p['db_over']}dB：{p['text'] or '無字幕'}" for p in peaks)
     data = _ask(summary_prompt(ls.n_highlights(duration)), header + "\n字幕：\n" + body, ls.SCHEMA)
+    cands = ls.scan_candidates(header, lines, peaks, "官方 YouTube 影片")
 
     def conv(part):
         if part is None:
@@ -402,7 +403,7 @@ def summarize(folder: Path, name: str, info: dict, cues: list[dict]) -> dict:
             "members_mentioned": h["members_mentioned"], "source": h["source"],
         })
     return {
-        "version": 1,
+        "version": 2,  # 2：加 candidates（分段列全部候選）
         "kind": "youtube",
         "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
         "model": ls.MODEL,
@@ -420,6 +421,7 @@ def summarize(folder: Path, name: str, info: dict, cues: list[dict]) -> dict:
         "segments": [{"start": ls._sec(s["start"]), "end": ls._sec(s["end"]), "start_ts": s["start"], "end_ts": s["end"],
                       "topic": s["topic"]} for s in data["segments"]],
         "highlights": highlights,
+        "candidates": cands,
         "audio_peaks": peaks,
     }
 
@@ -430,7 +432,7 @@ def to_markdown(s: dict) -> str:
            f"- 連結：{v['url']}", f"- 中文外掛字幕：`{v['files']['zh_srt']}`（語音辨識直翻，畫面上燒的字卡沒翻）",
            "", "## 統整", "", s["summary"], "", "## 段落", ""]
     out += [f"- `{x['start_ts']}–{x['end_ts']}` {x['topic']}" for x in s["segments"]]
-    out += ["", "## 爆點", ""]
+    out += ["", "## 精選爆點", ""]
     for h in s["highlights"]:
         out += [f"### {h['id']}. {h['title']}（{'★' * h['score']}，{'Shorts' if h['fit'] == 'short' else '長片'}）",
                 f"`{_ts(h['start'])}–{_ts(h['end'])}`", ""]
@@ -443,7 +445,8 @@ def to_markdown(s: dict) -> str:
             out.append(f"- **成員**：{'、'.join(h['members_mentioned'])}")
         out += [f"  - `{q['t_ts']}` {q['ko']} → {q['zh']}" for q in h["quotes"]]
         out.append("")
-    return "\n".join(out)
+    import live_summary as ls
+    return "\n".join(out + ls.candidates_markdown(s.get("candidates", [])))
 
 
 def work(vid: str, folder: Path | None = None) -> str:
