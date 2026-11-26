@@ -21,6 +21,7 @@ GLOSSARY = json.loads((Path(__file__).parent / "glossary.json").read_text(encodi
 _GLOSSARY_TEXT = "詞彙表（原文 → 譯名）：\n" + "\n".join(f"{k} → {v}" for k, v in GLOSSARY.items())
 _COMMON_RULES = (
     "- 團名、成員名照詞彙表；表內沒有的人名保留原文或用常見譯名。\n"
+    "- 成員本名照詞彙表連括號一起寫（例：中文本名（英文名）），讓讀者知道是誰。\n"
     "- 保留 emoji、#hashtag、[ ] 等格式符號；歌名可保留原文並在後面括號附中文。\n"
     "- 已經是中文就原樣輸出。\n"
 )
@@ -73,10 +74,13 @@ def translate(title: str, post: bool = False) -> str | None:
         return None
     for _ in range(2):
         text = _translate_once(title, post)
+        if re.search(r"[가-힣]", title) and text.strip() == title.strip():
+            logging.warning("模型把韓文原文原樣吐回來，重翻：%r", text[:100])  # 2026-11-26 遇到過
+            continue
         if not _leaked(title, text):
             return text
         logging.warning("譯文混進模型自言自語，重翻：%r", text[:200])
-    raise TranslateError("譯文混進模型的自言自語（重翻仍然有）")
+    raise TranslateError("譯文混進模型的自言自語或沒翻（重翻仍然有）")
 
 
 def _backend() -> str:

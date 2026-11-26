@@ -138,7 +138,9 @@ def fetch_artist_comments(post_id: str) -> list[dict]:
                 "id": pdata.get("commentId"),  # 同一輪成員連回同一則留言時用來合併
                 "body": pdata["body"].strip(),
                 "author": (official.get(pauthor.get("memberId")) or _name(pauthor))
-                if pauthor.get("profileType") == "ARTIST" else None,  # 粉絲不留暱稱
+                if pauthor.get("profileType") == "ARTIST" else None,  # 粉絲 = None
+                # 粉絲暱稱：只有成員回覆提到暱稱時才顯示（main._mentions_nick），平常不放
+                "nickname": pauthor.get("profileName") if pauthor.get("profileType") != "ARTIST" else None,
             }
         out.append({
             "uid": f"wvc:{c['commentId']}",

@@ -53,6 +53,8 @@ def open_db() -> sqlite3.Connection:
     db.execute("CREATE TABLE IF NOT EXISTS comment_heads (uid TEXT PRIMARY KEY, head TEXT)")
     # 翻譯失敗次數；到上限就放棄那則（記 seen、不推）
     db.execute("CREATE TABLE IF NOT EXISTS translate_fail (uid TEXT PRIMARY KEY, attempts INTEGER)")
+    # 成員留言彙整：留言翻好先存這裡，同一篇最後一則之後安靜 COMMENT_DIGEST_HOURS，TG／Threads 各發一則（flush_comment_digest）
+    db.execute("CREATE TABLE IF NOT EXISTS comment_digest (uid TEXT PRIMARY KEY, post_uid TEXT, data TEXT, created INTEGER)")
     live_archive.init_db(db)
     live_summary.init_db(db)
     yt_archive.init_db(db)
@@ -172,8 +174,53 @@ def flush_threads(db: sqlite3.Connection) -> None:
         review.mark_posted(db, uid, media_id)
 
 
+COMMENT_DIGEST_HOURS = float(os.environ.get("COMMENT_DIGEST_HOURS", "2"))  # 同一篇最後一則成員留言之後安靜多久發彙整
+TG_TEXT_LIMIT = 4000  # TG 單則 4096 字，留點空間給 HTML escape
+
+
+def _mentions_nick(body: str, nickname: str) -> bool:
+    """成員回覆有提到粉絲暱稱（「닉네임」「닉」或直接寫出暱稱）→ 彙整時附上暱稱，不然看不懂。"""
+    return "닉" in body or (len(nickname) >= 2 and nickname in body)
+
+
+def flush_comment_digest(db: sqlite3.Connection) -> None:
+    """成員留言彙整（使用者 2026-11-26 決定：成員自己留言、回成員、回粉絲都統一一則）：
+    同一篇貼文最後一則成員留言之後安靜 COMMENT_DIGEST_HOURS，「留言」「回粉絲」各一則：TG 掛在原貼文推播底下，Threads 發成原貼文的回覆。
+    超過字數上限才切成多則（TG 4000、Threads 500，第 2 則起接在前一則底下）。"""
+    from notify import format_comment_digest, send_weverse_comment
+    cutoff = time.time() - COMMENT_DIGEST_HOURS * 3600
+    posts = db.execute("SELECT post_uid FROM comment_digest GROUP BY post_uid HAVING MAX(created) <= ?", (cutoff,)).fetchall()
+    for (post_uid,) in posts:
+        rows = db.execute("SELECT uid, data FROM comment_digest WHERE post_uid=? ORDER BY created, uid", (post_uid,)).fetchall()
+        items = [json.loads(r[1]) for r in rows]
+        row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (post_uid,)).fetchone()
+        tg_ids: dict[str, int] = {}
+        try:
+            for sec in format_comment_digest(items, TG_TEXT_LIMIT):  # 留言、回粉絲各一則，都掛在原貼文推播底下
+                prev = row[0] if row else None
+                for part in sec["parts"]:
+                    prev = send_weverse_comment(part, prev)
+                    for uid in sec["uids"]:
+                        tg_ids.setdefault(uid, prev)
+        except Exception as e:
+            logging.warning("留言彙整推播失敗，下輪重試 %s：%s", post_uid, e)
+            continue
+        if not items[0].get("membership_only"):  # 會員限定貼文沒發 Threads，底下留言也不發
+            # uid 用 wvc: 開頭：前一則沒發上 Threads 時 flush_threads 會連後面的一起略過，不會變成單獨一篇
+            for sec in format_comment_digest(items, notify_threads.TEXT_LIMIT - SEQ_RESERVE):
+                base, prev_uid = f"wvc:digest:{post_uid}:{sec['key']}:{sec['uids'][0]}", post_uid
+                for i, part in enumerate(sec["parts"], start=1):
+                    uid = base if i == 1 else f"{base}#{i}"
+                    enqueue_threads(db, uid, part, reply_to_uid=prev_uid, root=post_uid if i == 1 else None)
+                    prev_uid = uid
+        for uid, _ in rows:
+            db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (uid, tg_ids.get(uid)))
+        db.execute("DELETE FROM comment_digest WHERE post_uid=?", (post_uid,))
+        db.commit()
+        logging.info("留言彙整 %s：%d 則留言", post_uid, len(items))
+
+
 COMMENT_WINDOW_DAYS = 7
-COMMENT_HOLD_MINUTES = float(os.environ.get("COMMENT_HOLD_MINUTES", "60"))  # 其他成員直接留言等多久沒人回才推
 _ig_last_poll = 0.0  # IG 輪詢比其他來源慢（IG_POLL_SECONDS），避免吃光 Meta 的限流額度
 _comments_last_poll: dict[str, float] = {}  # 成員留言每 COMMENT_POLL_SECONDS 抓一次（預設 15 分），成員連回的幾句才合得成一則
 
@@ -244,7 +291,6 @@ ALERT = TranslateAlert()
 
 def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts: list[dict], dry_run: bool) -> None:
     """最近 COMMENT_WINDOW_DAYS 天內的成員貼文，檢查底下有沒有新的成員留言。"""
-    from notify import format_weverse_comment, send_weverse_comment
     from translate import TranslateError, translate
 
     source = f"wvc:{community['id']}"
@@ -276,7 +322,6 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         return
 
     new = [(p, c) for p, c in comments if not db.execute("SELECT 1 FROM seen WHERE uid=?", (c["uid"],)).fetchone()]
-    groups: dict[tuple, list] = {}  # 同一位成員回同一則留言 → 合成一則推（同一輪內）
     for p, c in sorted(new, key=lambda x: x[1]["created"]):
         # 原貼文我們沒推過（上線前既有、或翻譯放棄）→ 留言也不推，只記 seen（使用者 2026-11-03 決定：沒脈絡的留言不發）
         # 原貼文還沒 seen = 翻譯／推播失敗等下輪重試 → 這則留言也等，下輪再處理
@@ -287,64 +332,23 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
                 logging.info("留言略過（原貼文沒推過）%s | %s", c["author"], c["body"][:40])
             continue
         rt = c["reply_to"]
-        skip = None
-        if not rt and c["author"] != p.get("author"):
-            # 其他成員直接留言：先等 COMMENT_HOLD_MINUTES，期間有成員回它就不單獨推（回覆那則會帶出這句），沒人回才推
-            if any((x["reply_to"] or {}).get("id") and f"wvc:{x['reply_to']['id']}" == c["uid"] for _, x in comments):
-                skip = "已有成員回覆，由回覆那則帶出"
-            elif time.time() - c["created"] / 1000 < COMMENT_HOLD_MINUTES * 60:
-                continue  # 還在等，下輪再看（不記 seen）
-        if skip:
-            if not dry_run:
-                db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], None, int(time.time())))
-                db.commit()
-            logging.info("留言略過（%s）%s | %s", skip, c["author"], c["body"][:40])
-            continue
-        key = (p["uid"], c["author"], rt["id"]) if rt and rt.get("id") else (c["uid"],)
-        groups.setdefault(key, (p, []))[1].append(c)
-
-    for p, cs in groups.values():
-        first = cs[0]
-        # 被回覆的留言我們推過 → 接成討論串：TG／Threads 掛在那則留言底下，不再重複引用原句
-        parent = f"wvc:{first['reply_to']['id']}" if first.get("reply_to") and first["reply_to"].get("id") else None
-        parent_tg = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (parent,)).fetchone() if parent else None
-        threaded = bool(parent_tg)
         try:
-            zhs = [translate(c["body"], post=True) for c in cs]
-            zh_rt = translate(first["reply_to"]["body"], post=True) if first.get("reply_to") and not threaded else None
+            zh = translate(c["body"], post=True)
+            zh_rt = translate(rt["body"], post=True) if rt else None
+            nick = rt.get("nickname") if rt and not rt.get("author") else None
+            zh_nick = (translate(nick) or nick) if nick and _mentions_nick(c["body"], nick) else None
         except TranslateError as e:
-            ALERT.fail(db, source, {"uid": first["uid"], "title": first["body"], "url": p["url"]}, e)
+            ALERT.fail(db, source, {"uid": c["uid"], "title": c["body"], "url": p["url"]}, e)
             continue
-        for c, zh in zip(cs, zhs):
-            logging.info("新留言 %s | %s → %s", c["author"], c["body"], zh)
-        if len(cs) > 1:
-            logging.info("合併 %d 則同一留言的回覆成一則", len(cs))
+        logging.info("新留言（等彙整）%s | %s → %s", c["author"], c["body"], zh)
         if dry_run:
             continue
-        if threaded:
-            row = parent_tg
-            head = db.execute("SELECT head FROM comment_heads WHERE uid=?", (parent,)).fetchone()
-            th_parent = head[0] if head else parent
-            logging.info("接在已推過的留言底下 %s", parent)
-        else:
-            row = db.execute("SELECT message_id FROM tg_messages WHERE uid=?", (p["uid"],)).fetchone()
-            th_parent = p["uid"]
-        text = format_weverse_comment(cs, zhs, zh_rt, quote=not threaded)
-        try:
-            msg_id = send_weverse_comment(text, row[0] if row else None)
-        except Exception as e:
-            logging.warning("留言推播失敗，下輪重試：%s", e)
-            continue
-        th_text = format_weverse_comment(cs, zhs, zh_rt, limit=notify_threads.TEXT_LIMIT - SEQ_RESERVE, quote=not threaded)
-        # 成員回粉絲留言 → 只推 TG、不發 Threads（使用者 2026-11-26 決定；之前 11-06 起是整則不推）
-        to_fan = bool(first.get("reply_to") and not first["reply_to"].get("author"))
-        if not p.get("membership_only") and not to_fan:  # 會員限定貼文沒發 Threads，底下留言也不發（不然會變成單獨一篇）
-            enqueue_threads(db, first["uid"], th_text, reply_to_uid=th_parent, root=p["uid"])
-        for c, zh in zip(cs, zhs):
-            db.execute("INSERT OR REPLACE INTO tg_messages VALUES (?,?)", (c["uid"], msg_id))
-            db.execute("INSERT OR REPLACE INTO comment_heads VALUES (?,?)", (c["uid"], first["uid"]))
-            db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
-            ALERT.clear(db, c["uid"])
+        data = {"comment": c, "zh": zh, "zh_reply_to": zh_rt, "zh_nickname": zh_nick,
+                "membership_only": bool(p.get("membership_only"))}
+        db.execute("INSERT OR REPLACE INTO comment_digest VALUES (?,?,?,?)",
+                   (c["uid"], p["uid"], json.dumps(data, ensure_ascii=False), int(c["created"] / 1000)))
+        db.execute("INSERT INTO seen VALUES (?,?,?,?,?)", (c["uid"], source, c["body"][:80], zh, int(time.time())))
+        ALERT.clear(db, c["uid"])
         db.commit()
 
 
@@ -475,6 +479,7 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                 yt_archive.step(db)  # 官方 YT 長片：下載、統整、中文外掛字幕（背景一次一支）
 
     if not dry_run:
+        flush_comment_digest(db)
         flush_threads(db)
         ALERT.end_round()
 
