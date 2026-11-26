@@ -179,6 +179,48 @@ def cues_from_json3(path: Path) -> list[dict]:
     return raw
 
 
+_VTT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[.,](\d{3})\s+-->\s+(\d+):(\d\d):(\d\d)[.,](\d{3})")
+
+
+def cues_from_vtt(path: Path) -> list[dict]:
+    """YouTube 有的影片字幕只給 vtt（沒有 json3）→ [{start, end（毫秒）, ko}]。
+    滾動式自動字幕（每格重複上一句）只取新的那行；連續重複去掉。"""
+    def ms(h, m, s, f):
+        return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(f)
+
+    raw: list[dict] = []
+    block: list[str] = []
+
+    def flush():
+        if not block:
+            return
+        m = _VTT_TIME.match(block[0])
+        if not m:
+            return
+        lines = [re.sub(r"<[^>]+>", "", x).strip() for x in block[1:]]
+        lines = [x for x in lines if x]
+        if raw and len(lines) > 1 and lines[0] == raw[-1]["ko"].split("\n")[-1]:
+            lines = lines[1:]  # 滾動式：第一行是上一格的
+        text = re.sub(r"\s+", " ", " ".join(lines)).strip()
+        if text and not (raw and raw[-1]["ko"] == text):
+            raw.append({"start": ms(*m.groups()[:4]), "end": ms(*m.groups()[4:]), "ko": text})
+
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            flush()
+            block = []
+        elif block or _VTT_TIME.match(line):
+            block.append(line)
+    flush()
+    for a, b in zip(raw, raw[1:]):
+        a["end"] = min(a["end"], b["start"])
+    return raw
+
+
+def load_cues(path: Path) -> list[dict]:
+    return cues_from_json3(path) if path.suffix == ".json3" else cues_from_vtt(path)
+
+
 def write_srt(path: Path, cues: list[dict], key: str) -> None:
     body = "\n".join(f"{i}\n{_srt_ts(c['start'])} --> {_srt_ts(c['end'])}\n{c[key]}\n" for i, c in enumerate(cues, 1))
     _write(path, body)
@@ -192,10 +234,10 @@ def _write(path: Path, text: str) -> None:
 
 
 def download(url: str, folder: Path, name: str) -> Path | None:
-    """下載 mp4（已存在就跳過）＋韓文自動字幕 json3。回傳字幕路徑；還沒有自動字幕回 None。"""
+    """下載 mp4（已存在就跳過）＋韓文自動字幕（json3，沒有就 vtt）。回傳字幕路徑；還沒有自動字幕回 None。"""
     mp4 = folder / f"{name}.mp4"
     base = ["yt-dlp", "--no-progress", "--no-playlist", "--no-warnings", "--no-mtime", "-P", str(folder), "-o", f"{name}.%(ext)s"]
-    subs = base + ["--skip-download", "--write-auto-subs", "--sub-langs", "ko", "--sub-format", "json3", url]
+    subs = base + ["--skip-download", "--write-auto-subs", "--sub-langs", "ko", "--sub-format", "json3/vtt", url]
     r = subprocess.run(subs, capture_output=True, text=True, timeout=600, umask=0)
     if r.returncode != 0:
         raise SystemExit(f"字幕下載失敗：{(r.stderr.strip().splitlines() or ['?'])[-1]}")
@@ -206,8 +248,11 @@ def download(url: str, folder: Path, name: str) -> Path | None:
         if r.returncode != 0 or not mp4.exists():
             raise SystemExit(f"影片下載失敗：{(r.stderr.strip().splitlines() or ['?'])[-1]}")
         print(f"影片存好：{mp4.name}（{mp4.stat().st_size / 2**20:.0f} MB）")
-    j3 = folder / f"{name}.ko.json3"
-    return j3 if j3.exists() else None
+    for ext in ("json3", "vtt"):  # 有的影片只給 vtt
+        p = folder / f"{name}.ko.{ext}"
+        if p.exists():
+            return p
+    return None
 
 
 def summary_prompt(n: int) -> str:
@@ -236,7 +281,8 @@ def summary_prompt(n: int) -> str:
         "注意：\n"
         "- 這是語音辨識字幕：常聽錯字、斷句怪、不知道誰在講、BGM 大的地方會漏。照上下文理解；quotes 的 ko 保留字幕原樣，"
         "覺得聽錯的在 why 註明「字幕可能聽錯」。\n"
-        "- 官方影片畫面上有燒進去的字卡（旁白、吐槽、說明），字幕裡沒有；你看不到畫面，純畫面的笑點不要猜。\n"
+        "- 官方影片畫面上有燒進去的字卡（旁白、吐槽、說明），通常字幕裡沒有；有的影片字幕會用 [ ] 或 ( ) 附上字卡內容，有就一起參考。"
+        "你看不到畫面，純畫面的笑點不要猜。\n"
         "- 字幕後面附「聲音峰值」：音量比前後 30 秒突然高出很多的時間點（大笑、尖叫、驚呼等），附那幾秒的字幕。"
         "字幕平淡但聲音很大的段落可能是反應笑點，可以列進 highlights，why 註明「聲音峰值」並寫高出幾 dB；"
         "不確定就照實說「聲音很大，要看畫面確認」。音樂、音效造成的峰值不要列。\n"
@@ -258,6 +304,7 @@ def translate_prompt() -> str:
         "- 自動字幕常把一句話切在兩行中間：可以在相鄰兩行之間挪字，讓每行讀起來通順，但不要合併或漏掉編號。\n"
         "- 聽錯的字照上下文猜最合理的意思；完全無意義的雜訊（例：[음악]、單獨的語助詞）zh 給空字串。\n"
         "- 喊人的「야」翻「呀」，不要翻「喂」。\n"
+        "- [ ] 是畫面字卡、( ) 是旁白或補充：照樣保留括號，字卡用［ ］、旁白用（ ）。\n"
         f"- 名字照詞彙表：{names}。{ls.name_hint()}\n"
     )
 
@@ -421,7 +468,7 @@ def work(vid: str, folder: Path | None = None) -> str:
     if j3 is None:
         print("還沒有韓文自動字幕，稍後再試（影片已存）")
         sys.exit(EXIT_LATER)
-    cues = cues_from_json3(j3)
+    cues = load_cues(j3)
     if len(cues) < 5:
         print(f"自動字幕太少（{len(cues)} 句），稍後再試")
         sys.exit(EXIT_LATER)
