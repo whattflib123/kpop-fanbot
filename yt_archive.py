@@ -403,7 +403,7 @@ def summarize(folder: Path, name: str, info: dict, cues: list[dict]) -> dict:
             "members_mentioned": h["members_mentioned"], "source": h["source"],
         })
     return {
-        "version": 2,  # 2：加 candidates（分段列全部候選）
+        "version": 3,  # 2：加 candidates（分段列全部候選）；3：4～5 星候選加 related
         "kind": "youtube",
         "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
         "model": ls.MODEL,
