@@ -34,7 +34,7 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 - 推播不加 AI 翻譯註記；Weverse 貼文不放原文連結，含影片時寫「（貼文含影片，請到 Weverse 觀看）」。IG 推 TG 直接附影片＋照片和貼文連結（影片抓不到或超過 50MB 改附縮圖＋「請到 Instagram 觀看」）；Threads 一律不放連結。YouTube 推播附影片連結。
 - **推播失敗**（TG 掛掉）：不記 seen，下輪重試。Threads 失敗不影響 TG，最多重試 5 次。
 - **Threads 一篇只有一個主題標籤**：只放第一個 hashtag，Threads 會把它轉成標籤、顯示時不帶 `#`。
-- Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。成員回粉絲的留言只推 TG、不發 Threads（之後有成員接著回這則，也因被回覆的留言沒發過 Threads 而不發 Threads）；回其他成員兩邊都推。其他成員（非貼文主人）直接留言先等 `COMMENT_HOLD_MINUTES`（預設 60）分鐘：期間有成員回它就不單獨推（回覆那則會帶出這句），沒人回才推。被回覆的留言已經推過（例如超過等待時間才回、或回貼文主人的直接留言）→ 接成討論串：TG／Threads 掛在那則留言推播底下，只放回覆，不重複引用原句（`comment_heads` 表記合併推播的第一則，`tg_messages` 也存留言的 message_id）；被回覆的留言沒發上 Threads 的話這則也不發 Threads。留言每 15 分鐘檢查一次（`COMMENT_POLL_SECONDS`），同一輪內同一位成員連回同一則留言會合成一則推。community 設 `"comments": false` = 只推貼文、不抓留言。
+- Weverse 成員留言：只檢查最近 7 天的成員貼文；成員在粉絲貼文下的留言抓不到（要登入）。原貼文沒推過（上線前既有、翻譯放棄）的留言不推、只記 seen；原貼文還在重試的留言等下一輪。成員留言一律彙整（使用者 2026-11-26 決定，成員自己留言、回成員、回粉絲都一樣）：新留言翻好先存 `comment_digest` 表、記 seen，同一篇貼文最後一則成員留言（依 Weverse 留言時間）之後安靜 `COMMENT_DIGEST_HOURS`（預設 2）小時，「留言」和「回粉絲」各發一則：TG 掛在原貼文推播底下、Threads 發成原貼文的回覆（各自編 💬N）（`wvc:digest:` 開頭，會員限定貼文不發 Threads）。內容：「成員 留言（n 則）」放成員自己直接留言和回成員，「成員 回粉絲（n 則）」放回粉絲（每組對話之間空一行），每段用「・」條列。回覆別人的段落寫 `・粉絲（或成員名）：被回覆譯文`，下面接 `　↳ 回覆譯文`；同一位成員連回同一則留言同一段、被回覆那句只出現一次；回覆同一份彙整裡的留言就接在那段底下；只有一位成員時不重複寫成員名；多行留言第二行起縮排。超過上限（TG 4000、Threads 500）才切成多則，標題加「（i/N）」，第 2 則起接在前一則底下。之後才回覆已彙整過的留言，會進下一份彙整並引用原句。 community 設 `"comments": false` = 只推貼文、不抓留言。
 - Weverse 官方公告：`weverse_communities[].notices` 設 `true` 才抓。列表只有標題，沒看過的才打 detail 抓內文和照片；會員限定公告跳過。標題「{團名} 官方在 Weverse 發佈了公告！📢」。
 - Weverse 直播通知：`weverse_communities[].lives` 設 `true`。只推 TG 頻道（不發 Threads、不審核），每場一次：開播「🔴 {團名} 成員 正在 Weverse 直播！」＋翻譯標題＋縮圖＋連結；bot 看到時已結束就推「📺 直播已結束，可看回放」。
 - 直播回放存檔（選用）：`.env` 設 `LIVE_ARCHIVE_DIR` 就在回放出來後用 yt-dlp 存影片＋韓／繁中字幕＋info.json（`live_archive.py`），存好私訊 admin。
@@ -89,7 +89,7 @@ SQLite（`data/state.db`）表：`seen`（推過的內容）、`sources`（已�
      `python -c "from sources import weverse; print(weverse.community_id('qwer'))"`（`weverse.io/qwer` 的 `qwer`）。
      `notices`：`true` = 也抓官方公告。
      `lives`：`true` = 也推成員直播通知（只推 TG）。
-     留言格式：`粉絲（或成員名）：被回覆的留言譯文` 換行 `成員：回覆譯文`，沒回覆別人就只有 `成員：譯文`（不加 AI 註記）。同一輪內同一位成員連回同一則留言合成一則（被回覆那句只出現一次，成員每句一行）。Threads 超過 500 字先縮被回覆那句（加「…」），還不夠從最早的回覆開始縮；TG 不截。
+     留言格式：一律彙整成「成員 留言」「成員 回粉絲」各一則（見上面 Weverse 成員留言那段）。
    - `instagram_accounts[]`：`username`、`author`（推播顯示的名字）、`label`（log 用）。對方必須是專業／創作者帳號。
    - 不要的來源整段刪掉即可。
 3. 改 `glossary.json`：團名、成員名、粉絲名的固定譯名（原文 → 譯名）。Weverse 貼文作者名會用 Weverse 官方名，不用另外設。

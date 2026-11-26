@@ -427,6 +427,70 @@ def format_weverse_comment(comments: list[dict], zh_bodies: list[str | None],
     return text[:limit]
 
 
+def format_comment_digest(items: list[dict], limit: int) -> list[dict]:
+    """成員留言彙整（同一篇貼文一段時間內的全部成員留言，依時間排序）→ 一則或多則純文字（每則不超過 limit）。
+
+    items 每筆：{"comment": weverse 留言, "zh": 譯文, "zh_reply_to": 被回覆那句譯文, "zh_nickname": 粉絲暱稱譯文或 None}。
+    分兩則（使用者 2026-11-26 決定）：「成員 留言（n 則）」（自己直接留言、回成員）和「成員 回粉絲（n 則）」各自一則，每段用「・」條列。
+    回傳 [{"key": "own"／"fan", "uids": 這則含的留言 uid, "parts": 文字（超過 limit 才切多段，標題加（i/N））}]，沒內容的那則不回。
+    回覆別人的段落：「・粉絲（或成員名）：被回覆譯文」下面接「　↳ 回覆譯文」；同一位成員連回同一則同一段、被回覆那句只出現一次；
+    回覆同一份彙整裡的留言 → 接在那段底下。只有一位成員時不重複寫成員名（標題已有）。
+    """
+    authors = list(dict.fromkeys(it["comment"]["author"] for it in items))
+    solo = len(authors) == 1
+    blocks: list[dict] = []  # {"fan": bool, "head": str|None, "lines": [str]}
+    where: dict = {}  # 留言 uid／(作者, 被回覆 id) → 段落 index
+    for it in items:
+        c = it["comment"]
+        rt = c.get("reply_to")
+        body = it.get("zh") or c["body"]
+        said = body if solo else f"{c['author']}：{body}"
+        parent = f"wvc:{rt['id']}" if rt and rt.get("id") else None
+        same = (c["author"], rt["id"]) if parent else None
+        i = where.get(parent) if parent in where else where.get(same)
+        if i is None:
+            if rt:
+                who = rt.get("author") or (f"粉絲（{it['zh_nickname']}）" if it.get("zh_nickname") else "粉絲")
+                blocks.append({"fan": not rt.get("author"), "head": f"{who}：{it.get('zh_reply_to') or rt['body']}", "lines": []})
+            else:
+                blocks.append({"fan": False, "head": None, "lines": []})
+            i = len(blocks) - 1
+        blocks[i]["lines"].append(said)
+        where[c["uid"]] = i
+        if same:
+            where.setdefault(same, i)
+
+    def render(bk: dict) -> str:
+        if bk["head"]:
+            first, rest = bk["head"], bk["lines"]
+        else:
+            first, rest = bk["lines"][0], bk["lines"][1:]
+        # 多行留言（例如選項 1) 2) 3)）第二行起縮排對齊，不跟條列混在一起
+        return "\n".join([f"・{first}".replace("\n", "\n　")] + [f"　↳ {x}".replace("\n", "\n　　") for x in rest])
+
+    out = []
+    for key, fan in (("own", False), ("fan", True)):
+        bks = [b for b in blocks if b["fan"] == fan]
+        if not bks:
+            continue
+        uids = [it["comment"]["uid"] for it in items if blocks[where[it["comment"]["uid"]]]["fan"] == fan]
+        who = list(dict.fromkeys(it["comment"]["author"] for it in items if it["comment"]["uid"] in uids))
+        title = f"{'、'.join(who)} {'回粉絲' if fan else '留言'}" + (f"（{len(uids)} 則）" if len(uids) > 1 else "")
+        cap = limit - len(title) - 12  # 12 給「（i/N）」和換行
+        parts: list[str] = []
+        sep = "\n\n" if fan else "\n"  # 回粉絲每組對話之間空一行（使用者 2026-11-26）
+        for bk in bks:
+            txt = _clip(render(bk), cap)
+            if parts and len(parts[-1]) + len(sep) + len(txt) <= cap:
+                parts[-1] += sep + txt
+            else:
+                parts.append(txt)
+        n = len(parts)
+        out.append({"key": key, "uids": uids,
+                    "parts": [f"{title}{f'（{i}/{n}）' if n > 1 else ''}\n\n{p}" for i, p in enumerate(parts, start=1)]})
+    return out
+
+
 def send_weverse_comment(text: str, reply_to_message_id: int | None) -> int:
     """text 是 format_weverse_comment 的純文字。"""
     text = html.escape(text)
