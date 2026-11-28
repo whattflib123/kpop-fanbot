@@ -347,7 +347,10 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
             nick = rt.get("nickname") if rt and not rt.get("author") else None
             zh_nick = (translate(nick) or nick) if nick and _mentions_nick(c["body"], nick) else None
         except TranslateError as e:
-            ALERT.fail(db, source, {"uid": c["uid"], "title": c["body"], "url": p["url"]}, e)
+            zh_post = (db.execute("SELECT zh_title FROM seen WHERE uid=?", (p["uid"],)).fetchone() or [None])[0]
+            ctx = [("這則留言", c["body"]), ("它回覆的留言", rt["body"] if rt else None),
+                   ("所屬貼文（原文）", p.get("body")), ("所屬貼文（中文）", zh_post)]  # 挑譯法時先給使用者看全文
+            ALERT.fail(db, source, {"uid": c["uid"], "title": c["body"], "url": p["url"], "context": ctx}, e)
             continue
         logging.info("新留言（等彙整）%s | %s → %s", c["author"], c["body"], zh)
         if dry_run:
@@ -437,7 +440,7 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                 try:
                     zh = translate(text_in, post=is_post) if text_in.strip() else None
                 except TranslateError as e:
-                    ALERT.fail(db, source, v, e)
+                    ALERT.fail(db, source, {**v, "context": [("完整原文", text_in)]}, e)
                     continue
                 logging.info("新%s %s | %s → %s", "直播" if v.get("kind") == "live" else "貼文" if is_post else "影片", label, v["title"], zh)
                 if dry_run:

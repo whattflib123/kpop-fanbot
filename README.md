@@ -29,7 +29,7 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 
 ### 行為規則
 - **第一次跑某個來源**：既有內容只記錄進 `data/state.db`，不推播。之後只推新的。
-- **翻不出來**（`choice.py`）：韓文原樣吐回兩次（多半是暱稱、合成詞、角色名）不算失敗，改開 WebSearch 查（只走 Claude Code 訂閱），私訊 `TELEGRAM_ADMIN_CHAT_ID` 原文＋羅馬拼音＋查到的資料＋1～3 個候選（附根據，音譯標「（音譯）」）＋按鈕「候選 N／保留原文／自己打」。選完馬上推；沒選一直等，每 `CHOICE_REMIND_HOURS` 小時提醒。挑候選時的關鍵詞記進 DB 詞彙表（`glossary_learned`），同詞不再問。
+- **翻不出來**（`choice.py`）：韓文原樣吐回兩次（多半是暱稱、合成詞、角色名）不算失敗，改開 WebSearch 查（只走 Claude Code 訂閱），先傳完整內容（留言附所屬貼文原文／中文），再私訊 `TELEGRAM_ADMIN_CHAT_ID` 原文＋羅馬拼音＋查到的資料＋1～3 個候選（附根據，音譯標「（音譯）」）＋按鈕「候選 N／保留原文／自己打」。選完馬上推；沒選一直等，每 `CHOICE_REMIND_HOURS` 小時提醒。挑候選時的關鍵詞記進 DB 詞彙表（`glossary_learned`），同詞不再問。
 - **翻譯失敗**（API 額度不足、錯誤、被拒、譯文截斷）：不推、下輪重試；同一則失敗 `TRANSLATE_MAX_ATTEMPTS` 次（預設 12，約 1 小時）就放棄。開始失敗、放棄、恢復時私訊 `TELEGRAM_ADMIN_CHAT_ID`。
 - 只有 emoji／符號的內容不送翻譯，直接推原文。
 - 推播不加 AI 翻譯註記；Weverse 貼文不放原文連結，含影片時寫「（貼文含影片，請到 Weverse 觀看）」。IG 推 TG 直接附影片＋照片和貼文連結（影片抓不到或超過 50MB 改附縮圖＋「請到 Instagram 觀看」）；Threads 一律不放連結。YouTube 推播附影片連結。
