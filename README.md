@@ -29,6 +29,7 @@ QWER Hina 在 Instagram 發佈了新貼文！📷
 
 ### 行為規則
 - **第一次跑某個來源**：既有內容只記錄進 `data/state.db`，不推播。之後只推新的。
+- **翻不出來**（`choice.py`）：韓文原樣吐回兩次（多半是暱稱、合成詞、角色名）不算失敗，改開 WebSearch 查（只走 Claude Code 訂閱），私訊 `TELEGRAM_ADMIN_CHAT_ID` 原文＋1～3 個候選（附根據）＋按鈕「候選 N／保留原文／自己打」。選完馬上推；沒選一直等，每 `CHOICE_REMIND_HOURS` 小時提醒。挑候選時的關鍵詞記進 DB 詞彙表（`glossary_learned`），同詞不再問。
 - **翻譯失敗**（API 額度不足、錯誤、被拒、譯文截斷）：不推、下輪重試；同一則失敗 `TRANSLATE_MAX_ATTEMPTS` 次（預設 12，約 1 小時）就放棄。開始失敗、放棄、恢復時私訊 `TELEGRAM_ADMIN_CHAT_ID`。
 - 只有 emoji／符號的內容不送翻譯，直接推原文。
 - 推播不加 AI 翻譯註記；Weverse 貼文不放原文連結，含影片時寫「（貼文含影片，請到 Weverse 觀看）」。IG 推 TG 直接附影片＋照片和貼文連結（影片抓不到或超過 50MB 改附縮圖＋「請到 Instagram 觀看」）；Threads 一律不放連結。YouTube 推播附影片連結。
@@ -140,6 +141,7 @@ Business Discovery 只能用「自己的 IG 專業帳號」去查別人的專業
 - `POLL_SECONDS`：輪詢間隔，預設 300。
 - `BOT_NAME`：容器名稱和私訊警示的開頭，預設 `fanbot`。同一台主機跑多個團體時要各取不同名字。
 - `TRANSLATE_MAX_ATTEMPTS`：預設 12。
+- `CHOICE_REMIND_HOURS`：翻不出來等你挑譯法時，幾小時提醒一次，預設 24。
 - `IG_POLL_SECONDS`：IG 輪詢間隔，預設 900。
 - `THREADS_REVIEW`：`0` 關閉發文前審核，預設開。`THREADS_REVIEW_HOURS`：審核逾時自動發，預設 24。
 

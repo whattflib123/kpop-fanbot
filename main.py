@@ -18,6 +18,7 @@ import notify_threads
 import ig_publish
 import review
 import bot_watchdog
+import choice
 import live_archive
 import live_summary
 import yt_archive
@@ -60,6 +61,7 @@ def open_db() -> sqlite3.Connection:
     yt_archive.init_db(db)
     ig_publish.init_db(db)  # IG Reels 排程發佈
     review.init_db(db)  # Threads 發文前審核
+    choice.init_db(db)  # 翻不出來時私訊挑譯法
     return db
 
 
@@ -243,8 +245,15 @@ class TranslateAlert:
         self.dry_run = dry_run
 
     def fail(self, db: sqlite3.Connection, source: str, item: dict, err: Exception) -> None:
-        """記一次失敗；到 TRANSLATE_MAX_ATTEMPTS 次就放棄（記 seen、不推）並私訊。"""
+        """記一次失敗；到 TRANSLATE_MAX_ATTEMPTS 次就放棄（記 seen、不推）並私訊。
+        翻不出來（NeedsChoice）不算失敗：私訊候選讓使用者挑，一直等到挑好。"""
+        from translate import NeedsChoice
         uid = item["uid"]
+        if isinstance(err, NeedsChoice):
+            if not self.dry_run:
+                choice.ask(db, err, item)
+            logging.info("%s 等挑譯法，暫不推播：%r", uid, err.src[:80])
+            return
         self.round_failed = True
         if self.dry_run:
             logging.warning("翻譯失敗 %s：%s", uid, err)
@@ -333,7 +342,7 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
             continue
         rt = c["reply_to"]
         try:
-            zh = translate(c["body"], post=True)
+            zh = translate(c["body"], post=True, context=p.get("body"))
             zh_rt = translate(rt["body"], post=True) if rt else None
             nick = rt.get("nickname") if rt and not rt.get("author") else None
             zh_nick = (translate(nick) or nick) if nick and _mentions_nick(c["body"], nick) else None
@@ -358,6 +367,7 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
 
     config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     ALERT.start_round(dry_run)
+    choice.load(db)  # 使用者挑好的譯文、等待中的原文、學到的詞
 
     def is_seen(uid: str) -> bool:
         return db.execute("SELECT 1 FROM seen WHERE uid=?", (uid,)).fetchone() is not None

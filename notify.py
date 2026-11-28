@@ -139,6 +139,36 @@ def answer_callback(callback_id: str, text: str) -> None:
     _call("answerCallbackQuery", callback_query_id=callback_id, text=text)
 
 
+# ───── 翻不出來時挑譯法（choice.py）─────
+def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_error: str | None = None) -> int:
+    """原文＋上網查到的候選＋按鈕（候選 N／保留原文／自己打），回 message_id。"""
+    lines = ["🔎 這則翻不出來，上網查了候選，選一個就推播（沒選會一直等）", f"出處：{link}", "", f"原文：{src[:800]}", ""]
+    if candidates:
+        for i, c in enumerate(candidates, 1):
+            lines += [f"{i}. {c['text'][:800]}", f"   根據：{c.get('why') or '（沒寫）'}", ""]
+    else:
+        lines += [f"查不到候選（{(search_error or '沒有結果')[:200]}），可以保留原文或自己打。", ""]
+    text = "\n".join(lines).rstrip()
+    if len(text) > MESSAGE_LIMIT:
+        text = text[: MESSAGE_LIMIT - 1] + "…"
+    kb = [[{"text": f"候選 {i}", "callback_data": f"tc:{i}:{cid}"} for i in range(1, len(candidates) + 1)],
+          [{"text": "保留原文", "callback_data": f"tc:keep:{cid}"}, {"text": "自己打", "callback_data": f"tc:own:{cid}"}]]
+    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=text, disable_web_page_preview=True,
+                 reply_markup={"inline_keyboard": [r for r in kb if r]})["message_id"]
+
+
+def send_choice_reminder(message_id: int | None, link: str) -> None:
+    extra = {"reply_parameters": {"message_id": message_id, "allow_sending_without_reply": True}} if message_id else {}
+    _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=f"⏰ 這則還在等你挑譯法：{link}",
+          disable_web_page_preview=True, **extra)
+
+
+def ask_choice_text(src: str) -> int:
+    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"],
+                 text=f"回覆這則訊息，輸入要發出去的譯文：\n{src[:800]}",
+                 reply_markup={"force_reply": True, "input_field_placeholder": "譯文"})["message_id"]
+
+
 class HardTimeout(RuntimeError):
     pass
 
