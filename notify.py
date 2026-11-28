@@ -160,9 +160,11 @@ def romanize(text: str) -> str:
 
 
 def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_error: str | None = None,
-                findings: list[dict] | None = None, context: list[tuple[str, str | None]] | None = None) -> int:
+                findings: list[dict] | None = None, context: list[tuple[str, str | None]] | None = None,
+                previews: list[tuple[str, str]] | None = None) -> int:
     """先傳完整內容（context：[(標題, 全文)]，例如這則留言、回覆的留言、所屬貼文原文／中文；太長分好幾則），
-    再接原文＋查到的資料＋候選＋按鈕（候選 N／保留原文／自己打），回按鈕那則的 message_id。"""
+    再接原文＋查到的資料＋候選＋各選項最後會發出的訊息（previews：[(選項, 全文)]，太長每則平均截短）＋按鈕
+    （候選 N／保留原文／自己打），回按鈕那則的 message_id。"""
     chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
     head_id = None
     blocks = [f"【{label}】\n{text.strip()}" for label, text in context or [] if text and text.strip()]
@@ -181,6 +183,12 @@ def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_er
     else:
         lines += [f"查不到候選（{(search_error or '沒有結果')[:200]}），可以保留原文或自己打。", ""]
     text = "\n".join(lines).rstrip()
+    if previews:
+        head = "\n\n📤 選了會發出（TG 頻道版；Threads 同內容，只留第一個 hashtag，太長分段）"
+        room = MESSAGE_LIMIT - len(text) - len(head) - 30
+        cap = max(80, room // len(previews) - 12)
+        blocks = [f"【{label}】\n" + (p if len(p) <= cap else p[:cap] + "…（後略）") for label, p in previews]
+        text += head + "\n\n" + "\n\n".join(blocks)
     if len(text) > MESSAGE_LIMIT:
         text = text[: MESSAGE_LIMIT - 1] + "…"
     kb = [[{"text": f"候選 {i}", "callback_data": f"tc:{i}:{cid}"} for i in range(1, len(candidates) + 1)],
