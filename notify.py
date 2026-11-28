@@ -160,8 +160,17 @@ def romanize(text: str) -> str:
 
 
 def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_error: str | None = None,
-                findings: list[dict] | None = None) -> int:
-    """原文＋查到的資料＋候選＋按鈕（候選 N／保留原文／自己打），回 message_id。"""
+                findings: list[dict] | None = None, context: list[tuple[str, str | None]] | None = None) -> int:
+    """先傳完整內容（context：[(標題, 全文)]，例如這則留言、回覆的留言、所屬貼文原文／中文；太長分好幾則），
+    再接原文＋查到的資料＋候選＋按鈕（候選 N／保留原文／自己打），回按鈕那則的 message_id。"""
+    chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
+    head_id = None
+    blocks = [f"【{label}】\n{text.strip()}" for label, text in context or [] if text and text.strip()]
+    if blocks:
+        full = "📄 翻不出來的這則，完整內容先給你看：\n\n" + "\n\n".join(blocks)
+        for part in split_plain(full, MESSAGE_LIMIT - 100):
+            mid = _call("sendMessage", chat_id=chat_id, text=part, disable_web_page_preview=True)["message_id"]
+            head_id = head_id or mid
     lines = ["🔎 這則翻不出來，上網查了候選，選一個就推播（沒選會一直等）", f"出處：{link}", "",
              f"原文：{src[:800]}", f"拼音：{romanize(src[:800])}", ""]
     if findings:
@@ -176,8 +185,9 @@ def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_er
         text = text[: MESSAGE_LIMIT - 1] + "…"
     kb = [[{"text": f"候選 {i}", "callback_data": f"tc:{i}:{cid}"} for i in range(1, len(candidates) + 1)],
           [{"text": "保留原文", "callback_data": f"tc:keep:{cid}"}, {"text": "自己打", "callback_data": f"tc:own:{cid}"}]]
-    return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"], text=text, disable_web_page_preview=True,
-                 reply_markup={"inline_keyboard": [r for r in kb if r]})["message_id"]
+    extra = {"reply_parameters": {"message_id": head_id, "allow_sending_without_reply": True}} if head_id else {}
+    return _call("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True,
+                 reply_markup={"inline_keyboard": [r for r in kb if r]}, **extra)["message_id"]
 
 
 def send_choice_reminder(message_id: int | None, link: str) -> None:
