@@ -22,6 +22,7 @@ import sqlite3
 import time
 
 import bot_watchdog
+import choice
 import notify
 import notify_threads
 
@@ -145,12 +146,12 @@ def _edit(message_id: int | None, status_line: str) -> None:
 def wait(db: sqlite3.Connection, seconds: float) -> None:
     """兩輪輪詢之間：長輪詢 TG 更新，處理按鈕和評論回覆。review 關閉時就單純 sleep。"""
     deadline = time.time() + seconds
-    if not enabled():
+    if not (enabled() or choice.pending(db)):  # 審核、挑譯法按鈕都沒有就不長輪詢 TG
         time.sleep(max(0, seconds))
         return
     while True:
         remain = deadline - time.time()
-        if remain <= 0:
+        if remain <= 0 or choice.take_wake():  # 剛挑完譯法：馬上跑下一輪推出去
             return
         bot_watchdog.kick()
         try:
@@ -169,9 +170,14 @@ def handle_updates(db: sqlite3.Connection, timeout: int = 0) -> None:
         db.execute("INSERT OR REPLACE INTO kv VALUES ('tg_offset', ?)", (str(u["update_id"] + 1),))
         try:
             if "callback_query" in u:
-                _on_callback(db, u["callback_query"], admin)
+                cq = u["callback_query"]
+                if (cq.get("data") or "").startswith("tc:") and str(cq.get("from", {}).get("id")) == str(admin):
+                    choice.on_callback(db, cq)  # 翻不出來時挑譯法
+                else:
+                    _on_callback(db, cq, admin)
             elif "message" in u and str(u["message"].get("chat", {}).get("id")) == str(admin):
-                _on_message(db, u["message"])
+                if not choice.on_message(db, u["message"]):  # 挑譯法「自己打」的回覆
+                    _on_message(db, u["message"])
         except Exception as e:
             logging.warning("處理 TG 更新失敗：%s", e)
         db.commit()
