@@ -140,9 +140,29 @@ def answer_callback(callback_id: str, text: str) -> None:
 
 
 # ───── 翻不出來時挑譯法（choice.py）─────
+_RR_INIT = ["g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t", "p", "h"]
+_RR_MED = ["a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u", "wo", "we", "wi", "yu",
+           "eu", "ui", "i"]
+_RR_FIN = ["", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "l", "l", "l", "p", "l", "m", "p", "p", "t", "t",
+           "ng", "t", "t", "k", "t", "p", "t"]
+
+
+def romanize(text: str) -> str:
+    """韓文 → 羅馬拼音（Revised Romanization 逐字轉，不處理連音／音變），給使用者自己翻時參考。"""
+    out = []
+    for ch in text:
+        n = ord(ch) - 0xAC00
+        if 0 <= n < 11172:
+            out.append(_RR_INIT[n // 588] + _RR_MED[n % 588 // 28] + _RR_FIN[n % 28])
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_error: str | None = None) -> int:
     """原文＋上網查到的候選＋按鈕（候選 N／保留原文／自己打），回 message_id。"""
-    lines = ["🔎 這則翻不出來，上網查了候選，選一個就推播（沒選會一直等）", f"出處：{link}", "", f"原文：{src[:800]}", ""]
+    lines = ["🔎 這則翻不出來，上網查了候選，選一個就推播（沒選會一直等）", f"出處：{link}", "",
+             f"原文：{src[:800]}", f"拼音：{romanize(src[:800])}", ""]
     if candidates:
         for i, c in enumerate(candidates, 1):
             lines += [f"{i}. {c['text'][:800]}", f"   根據：{c.get('why') or '（沒寫）'}", ""]
@@ -165,7 +185,7 @@ def send_choice_reminder(message_id: int | None, link: str) -> None:
 
 def ask_choice_text(src: str) -> int:
     return _call("sendMessage", chat_id=os.environ["TELEGRAM_ADMIN_CHAT_ID"],
-                 text=f"回覆這則訊息，輸入要發出去的譯文：\n{src[:800]}",
+                 text=f"回覆這則訊息，輸入要發出去的譯文：\n{src[:800]}\n拼音：{romanize(src[:800])}",
                  reply_markup={"force_reply": True, "input_field_placeholder": "譯文"})["message_id"]
 
 
