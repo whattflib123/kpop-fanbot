@@ -364,9 +364,21 @@ def check_comments(db: sqlite3.Connection, artist: dict, community: dict, posts:
         db.commit()
 
 
+def _tg_preview(artist: dict, v: dict, zh: str, is_post: bool, platform: str) -> str:
+    """推 TG 頻道時的文字（跟 send_live／send_weverse_post／send_video 同一套排版）。"""
+    from notify import format_live, format_post, format_weverse_post
+    tags = artist.get("hashtags")
+    if v.get("kind") == "live":
+        return format_live(artist["name"], v, zh, tags)
+    if is_post:
+        return format_weverse_post(artist["name"], v, zh, tags, platform=platform,
+                                   link=v.get("url") if platform == "Instagram" else None)
+    return format_post(artist["name"], v, zh, tags)
+
+
 def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
     from notify import format_post, send_live, send_video, send_weverse_post, split_threads_post
-    from translate import TranslateError, translate
+    from translate import NeedsChoice, TranslateError, translate
 
     config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     ALERT.start_round(dry_run)
@@ -440,7 +452,12 @@ def run_once(db: sqlite3.Connection, dry_run: bool) -> None:
                 try:
                     zh = translate(text_in, post=is_post) if text_in.strip() else None
                 except TranslateError as e:
-                    ALERT.fail(db, source, {**v, "context": [("完整原文", text_in)]}, e)
+                    item = {**v, "context": [("完整原文", text_in)]}
+                    if isinstance(e, NeedsChoice) and not e.asked:  # 挑譯法訊息附「各選項最後會發出什麼」（TG 頻道版）
+                        item["previews"] = [(f"候選 {i}", _tg_preview(artist, v, c["text"], is_post, platform))
+                                            for i, c in enumerate(e.candidates, 1)]
+                        item["previews"].append(("保留原文", _tg_preview(artist, v, text_in, is_post, platform)))
+                    ALERT.fail(db, source, item, e)
                     continue
                 logging.info("新%s %s | %s → %s", "直播" if v.get("kind") == "live" else "貼文" if is_post else "影片", label, v["title"], zh)
                 if dry_run:
