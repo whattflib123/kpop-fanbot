@@ -54,11 +54,16 @@ _SEARCH_HEAD = (
     "- terms：你解讀的關鍵詞，term 是原文詞、zh 是放進譯文的寫法。\n"
     "- 照發音用中文字寫的（音譯、諧音）一定要在那個詞後面標「（音譯）」，例：쿠로밍 → 庫洛明（音譯）；"
     "音譯不能當成意思，查得到或拆得出意思時優先用「原文（解釋）」。\n"
+    "另外輸出 findings：查詢過程查到的資料，每個查過的詞一條（最多 6 條），term 是詞、found 是查到的意思（40 字內，"
+    "寫出處類型例如韓文維基、粉絲社群、新聞）；查不到的詞也要列，found 寫「查無直接出處」。只寫真的查到的，不要編。\n"
     "翻譯規則：\n"
 )
 _SEARCH_SCHEMA = json.dumps({
-    "type": "object", "required": ["candidates"],
-    "properties": {"candidates": {"type": "array", "minItems": 1, "maxItems": 3, "items": {
+    "type": "object", "required": ["findings", "candidates"],
+    "properties": {"findings": {"type": "array", "maxItems": 6, "items": {
+        "type": "object", "required": ["term", "found"],
+        "properties": {"term": {"type": "string"}, "found": {"type": "string"}}}},
+                   "candidates": {"type": "array", "minItems": 1, "maxItems": 3, "items": {
         "type": "object", "required": ["text", "why", "terms"],
         "properties": {"text": {"type": "string"}, "why": {"type": "string"},
                        "terms": {"type": "array", "items": {"type": "object", "required": ["term", "zh"],
@@ -99,9 +104,11 @@ class NeedsChoice(TranslateError):
     """翻不出來，要使用者挑譯法。candidates：[{"text","why","terms":[{"term","zh"}]}]，查不到是空的
     （使用者還是可以選保留原文或自己打）。asked=True 表示已經私訊過、還在等。"""
 
-    def __init__(self, src: str, candidates: list[dict], asked: bool = False, search_error: str | None = None):
+    def __init__(self, src: str, candidates: list[dict], asked: bool = False, search_error: str | None = None,
+                 findings: list[dict] | None = None):
         super().__init__("翻不出來，等使用者挑譯法" if asked else "翻不出來，已上網查候選")
         self.src, self.candidates, self.asked, self.search_error = src, candidates, asked, search_error
+        self.findings = findings or []  # 查到的資料 [{"term","found"}]
 
 
 # 模型偶爾把自我修正混進譯文（例如「Wait, I must not add emoji… Correct output:」），原文沒有這些字才算外洩
@@ -136,16 +143,16 @@ def translate(title: str, post: bool = False, context: str | None = None) -> str
         logging.warning("譯文混進模型自言自語，重翻：%r", text[:200])
     if same == 2:  # 2026-11-28「시몽가 vs 쿠로밍」：暱稱合成詞，模型照規則保留原文
         try:
-            cands = search_candidates(title, post, context)
+            cands, findings = search_candidates(title, post, context)
         except TranslateError as e:
             logging.warning("上網查候選失敗：%s", e)
             raise NeedsChoice(title, [], search_error=str(e)) from None
-        raise NeedsChoice(title, cands)
+        raise NeedsChoice(title, cands, findings=findings)
     raise TranslateError("譯文混進模型的自言自語或沒翻（重翻仍然有）")
 
 
-def search_candidates(title: str, post: bool, context: str | None = None) -> list[dict]:
-    """claude -p 開 WebSearch 查，回候選譯法（結構化輸出）。只走訂閱（cli），沒有 API 版。"""
+def search_candidates(title: str, post: bool, context: str | None = None) -> tuple[list[dict], list[dict]]:
+    """claude -p 開 WebSearch 查，回（候選譯法, 查到的資料）（結構化輸出）。只走訂閱（cli），沒有 API 版。"""
     if _backend() != "cli":
         raise TranslateError("上網查只支援 cli 後端")
     user = title if not context else f"{title}\n\n（上下文，同一則貼文，不用翻：）\n{context[:1500]}"
@@ -160,8 +167,10 @@ def search_candidates(title: str, post: bool, context: str | None = None) -> lis
     cands = [c for c in out.get("candidates") or [] if isinstance(c, dict) and (c.get("text") or "").strip()]
     if not cands:
         raise TranslateError("查不到候選")
+    findings = [{"term": f["term"].strip(), "found": f["found"].strip()} for f in out.get("findings") or []
+                if isinstance(f, dict) and (f.get("term") or "").strip() and (f.get("found") or "").strip()][:6]
     return [{"text": c["text"].strip(), "why": (c.get("why") or "").strip(),
-             "terms": [t for t in c.get("terms") or [] if t.get("term") and t.get("zh")]} for c in cands[:3]]
+             "terms": [t for t in c.get("terms") or [] if t.get("term") and t.get("zh")]} for c in cands[:3]], findings
 
 
 def _backend() -> str:

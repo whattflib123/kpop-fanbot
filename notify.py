@@ -159,10 +159,13 @@ def romanize(text: str) -> str:
     return "".join(out)
 
 
-def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_error: str | None = None) -> int:
-    """原文＋上網查到的候選＋按鈕（候選 N／保留原文／自己打），回 message_id。"""
+def send_choice(cid: int, src: str, candidates: list[dict], link: str, search_error: str | None = None,
+                findings: list[dict] | None = None) -> int:
+    """原文＋查到的資料＋候選＋按鈕（候選 N／保留原文／自己打），回 message_id。"""
     lines = ["🔎 這則翻不出來，上網查了候選，選一個就推播（沒選會一直等）", f"出處：{link}", "",
              f"原文：{src[:800]}", f"拼音：{romanize(src[:800])}", ""]
+    if findings:
+        lines += ["🔍 查到的資料"] + [f"・{f['term'][:40]}：{f['found'][:120]}" for f in findings[:6]] + [""]
     if candidates:
         for i, c in enumerate(candidates, 1):
             lines += [f"{i}. {c['text'][:800]}", f"   根據：{c.get('why') or '（沒寫）'}", ""]

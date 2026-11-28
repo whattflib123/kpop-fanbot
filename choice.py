@@ -70,7 +70,8 @@ def ask(db: sqlite3.Connection, err: "translate.NeedsChoice", item: dict) -> Non
                                                  json.dumps(err.candidates, ensure_ascii=False), "asked", now, now))
     cid = cur.lastrowid
     try:
-        mid = notify.send_choice(cid, err.src, err.candidates, item.get("url") or item["uid"], err.search_error)
+        mid = notify.send_choice(cid, err.src, err.candidates, item.get("url") or item["uid"], err.search_error,
+                                 err.findings)
     except Exception as e:
         logging.warning("私訊挑譯法失敗，下輪再試：%s", e)
         db.execute("DELETE FROM translate_choice WHERE id=?", (cid,))
